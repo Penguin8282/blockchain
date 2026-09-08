@@ -254,3 +254,54 @@ def compare_all_models(
     detailed_table = pd.concat(all_fold_results, ignore_index=True)
 
     return summary_table, detailed_table
+
+
+def generate_out_of_fold_probabilities(
+    features: pd.DataFrame,
+    target: pd.Series,
+    model_name: str = MODEL_LIGHTGBM,
+    fold_count: int = config.CROSS_VALIDATION_FOLDS,
+    random_seed: int = config.RANDOM_SEED,
+) -> np.ndarray:
+    """
+    '폴드 밖(out-of-fold)' 예측 확률을 만든다.
+
+    ■ 이게 왜 필요한가
+      임계값을 고르려면 "이 모델이 처음 보는 데이터에 어떤 확률을 줄까"를 알아야 합니다.
+      학습에 쓴 데이터로 확률을 뽑으면 모델이 답을 외운 상태라 확률이 지나치게 확신에 차고,
+      그걸로 임계값을 정하면 실제 서비스에서 엉뚱하게 동작합니다.
+
+    ■ 방법
+      교차검증과 똑같이 5조각으로 나눈 뒤, 각 조각을 '검증 fold' 로 쓸 때의 예측만 모읍니다.
+      그러면 **모든 행이 "학습에 쓰이지 않은 상태에서 받은 확률"** 을 한 번씩 갖게 됩니다.
+      단일 분할(80/20)보다 데이터를 다 쓸 수 있어 임계값 추정이 안정적입니다.
+
+    돌려주는 값: 입력과 같은 길이의 확률 배열 (i번째 = i번째 행의 사기 확률)
+    """
+    cross_validator = StratifiedKFold(
+        n_splits=fold_count, shuffle=True, random_state=random_seed
+    )
+
+    # 결과를 담을 빈 배열을 먼저 만들고, fold 마다 해당 위치에 채워 넣는다
+    out_of_fold_probabilities = np.zeros(len(features), dtype=float)
+
+    for train_indices, validation_indices in cross_validator.split(features, target):
+        train_features = features.iloc[train_indices]
+        train_target = target.iloc[train_indices]
+        validation_features = features.iloc[validation_indices]
+
+        if model_name == MODEL_LOGISTIC_WOE:
+            woe_encoder = WeightOfEvidenceEncoder(max_bin_count=10, separate_zero_bin=True)
+            woe_encoder.fit(train_features, train_target)
+            train_input = woe_encoder.transform(train_features)
+            validation_input = woe_encoder.transform(validation_features)
+        else:
+            train_input = train_features
+            validation_input = validation_features
+
+        model = create_model(model_name, random_seed=random_seed)
+        model.fit(train_input, train_target)
+
+        out_of_fold_probabilities[validation_indices] = model.predict_proba(validation_input)[:, 1]
+
+    return out_of_fold_probabilities

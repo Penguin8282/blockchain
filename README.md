@@ -71,7 +71,7 @@ AUC 가 **0.4901** (동전 던지기)로 나왔습니다. 즉 교차검증 코�
 | `src/preprocessing.py` | 두 트랙(full / no_leak)의 모델링 데이터 생성 | 완료 |
 | `src/modeling.py` | 모델 3종 학습 + 층화 5-fold 교차검증 + AUC·KS·F1 | 완료 |
 | `src/explain.py` | SHAP 값 추출·가법성 검산·전역/개별 설명 표 생성 | 완료 |
-| `src/threshold_analysis.py` | 비용 기반 임계값(cut-off) 분석 | 단계 6 예정 |
+| `src/threshold_analysis.py` | 비용 기반 임계값(cut-off) 분석 + 처리 용량 제약 | 완료 |
 | `notebooks/01_eda.ipynb` | 탐색적 데이터 분석 + **데이터 누수 점검** (실행 결과 포함) | 완료 |
 | `reports/data_dictionary.md` | 51개 열의 한국어 설명 + 확신 수준(확실/추정/확인 필요) | 완료 |
 | `reports/feature_groups.md` | 특징 47개의 4묶음 분류표 | 완료 |
@@ -90,6 +90,10 @@ AUC 가 **0.4901** (동전 던지기)로 나왔습니다. 즉 교차검증 코�
 | `reports/figures/06_shap_global_importance.png` | SHAP 전역 중요도 상위 15개 | 완료 |
 | `reports/figures/07_shap_beeswarm.png` | 특징 값 높낮이가 미는 방향 (beeswarm) | 완료 |
 | `reports/figures/08_shap_individual.png` | 사기 1건·정상 1건 개별 설명 | 완료 |
+| `notebooks/05_threshold_analysis.ipynb` | 임계값 비용 분석 (실행 결과 포함) | 완료 |
+| `reports/threshold_analysis.md` | 비용비별 최적 임계값 + 금액 시나리오 + 용량 제약 | 완료 |
+| `reports/figures/09_threshold_tradeoff.png` | 임계값에 따른 정밀도·재현율·F1 | 완료 |
+| `reports/figures/10_cost_curves.png` | 비용비 5가지의 총비용 곡선 | 완료 |
 | `data/raw/` | **원본 그대로** 두는 폴더. 절대 수정하지 않음 (깃 제외) | 완료 |
 | `data/processed/` | 전처리·특징 가공 결과 저장 폴더 (깃 제외) | 완료 |
 
@@ -108,7 +112,7 @@ AUC 가 **0.4901** (동전 던지기)로 나왔습니다. 즉 교차검증 코�
 | 3 | WoE / IV 계산 및 IV 상위 15개 특징 | ✅ 완료 |
 | 4 | 모델 3종 비교 (로지스틱회귀·LightGBM·랜덤포레스트) | ✅ 완료 |
 | 5 | SHAP 설명 (전역 중요도 + 개별 사례 2건) | ✅ 완료 |
-| 6 | 비용 기반 임계값(cut-off) 분석 | ⬜ 대기 |
+| 6 | 비용 기반 임계값(cut-off) 분석 | ✅ 완료 |
 | 7 | 링크드인용 요약 5줄 | ⬜ 대기 |
 
 ---
