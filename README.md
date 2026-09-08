@@ -13,17 +13,31 @@ Kaggle **Ethereum Fraud Detection Dataset** 을 이용해, 신용평가 모형�
 
 이 데이터에는 **정답이 새어 나오는 구조적 문제(data leakage)** 가 있습니다.
 
-| 발견 | 내용 |
-|---|---|
-| `Total ERC20 tnxs` 열 | 값이 **비어 있으면 100% 사기**(829행), **0이면 100% 정상**(4,399행) |
-| 영향 범위 | 전체 9,841행 중 **5,228행(53.1%)** 이 이 열 하나로 정답이 결정됨 |
-| 행 순서 | 앞 7,000행은 사기 0%, 8,000행 이후는 사기 100% — 두 파일을 이어붙인 흔적 |
+단계 2·3에서 **정답이 새는 경로를 최소 4군데** 찾았습니다.
+
+| # | 경로 | 규모 | 사기 비율 | 조치 |
+|---|---|---|---|---|
+| 1 | `Total ERC20 tnxs` 가 **비어 있음** | 829행 | **100%** | 0으로 채워 차단 |
+| 2 | **모든 특징이 0인 '껍데기 행'** | 274행 | **100%** | 남아 있음 |
+| 3 | 토큰 이름이 `Blockwell say NOTSAFU` 등 | 1,970행 | **100%** | 문자열 열을 모델에서 제외 |
+| 4 | `total ether received` = **정확히 101.0** | 1,476행 | **0%** | 남아 있음 |
+
+추가 증거:
+
+- 원본 CSV 행 순서: 앞 7,000행 사기 0%, 8,000행 이후 사기 100% → **두 파일을 이어붙인 흔적**
+- **41개 특징이 전부 IV > 0.5** — 실무에서 IV 1.0을 넘는 변수는 거의 예외 없이 데이터 문제를 의심합니다
+- 1,476개 주소가 **정확히 101.0 ETH**를 받았습니다. 진짜 거래라면 금액이 소수점까지
+  제각각이어야 하므로, 정상 주소 집단 상당수가 인위적으로 만들어졌을 가능성이 있습니다 (**확인 필요**)
 
 원인은 **정상 주소와 사기 주소를 서로 다른 방법으로 수집해 합쳤기 때문**으로 보입니다.
 따라서 이 데이터로 만든 모델의 AUC가 0.99여도 **현실 성능이 아닙니다.**
 
-자세한 근거는 `notebooks/01_eda.ipynb` 의 **"2-B. 데이터 누수 정밀 점검"** 절을 보세요.
-단계 3 이후로는 **누수 특징을 포함한 모델과 제외한 모델을 함께 만들어 비교**합니다.
+자세한 근거: `notebooks/01_eda.ipynb` 의 "2-B. 데이터 누수 정밀 점검",
+`notebooks/02_woe_iv.ipynb` 의 "3-B. 오염 경로 카탈로그".
+
+**그래도 프로젝트를 계속하는 이유**: WoE·IV·SHAP·임계값 분석이라는 방법론을 익히는 것이
+목표이고, "성능 숫자를 의심하고 원인을 찾아내는 것"이 분석가의 핵심 역량이기 때문입니다.
+단계 4부터는 **누수 포함(full) / 누수 최소 차단(no_leak) 두 트랙**을 나란히 비교합니다.
 
 ---
 
@@ -42,17 +56,21 @@ Kaggle **Ethereum Fraud Detection Dataset** 을 이용해, 신용평가 모형�
 | `src/data_loader.py` | 원본 CSV 읽기, 열 이름 정리, 특징 4묶음 정의 | 완료 |
 | `src/plot_style.py` | 그래프 색·한글 글꼴을 프로젝트 전체에서 통일 | 완료 |
 | `src/build_data_dictionary.py` | `reports/data_dictionary.md` 를 자동 생성 | 완료 |
-| `src/woe_iv.py` | WoE(증거가중치)·IV(정보가치) 직접 구현 | 단계 3 예정 |
+| `src/woe_iv.py` | WoE·IV 직접 구현 (fit/transform 구조, 구간 자동 분할) | 완료 |
+| `src/preprocessing.py` | 두 트랙(full / no_leak)의 모델링 데이터 생성 | 완료 |
 | `src/modeling.py` | 모델 3종 학습 + 층화 5-fold 교차검증 + AUC·KS·F1 | 단계 4 예정 |
 | `src/explain.py` | SHAP 기반 전역·개별 설명 그림 생성 | 단계 5 예정 |
 | `src/threshold_analysis.py` | 비용 기반 임계값(cut-off) 분석 | 단계 6 예정 |
 | `notebooks/01_eda.ipynb` | 탐색적 데이터 분석 + **데이터 누수 점검** (실행 결과 포함) | 완료 |
 | `reports/data_dictionary.md` | 51개 열의 한국어 설명 + 확신 수준(확실/추정/확인 필요) | 완료 |
 | `reports/feature_groups.md` | 특징 47개의 4묶음 분류표 | 완료 |
+| `reports/iv_ranking.md` | IV 순위표 + 오염 경로 카탈로그 | 완료 |
 | `reports/model_comparison.md` | 모델 3종 성능 비교 표 | 단계 4 예정 |
 | `reports/linkedin_summary.md` | 링크드인용 5줄 요약 | 단계 7 예정 |
 | `reports/figures/01_class_balance.png` | 클래스 분포 그림 | 완료 |
 | `reports/figures/02_feature_distributions.png` | 묶음별 대표 특징 분포 비교 | 완료 |
+| `notebooks/02_woe_iv.ipynb` | WoE·IV 계산 + 오염 경로 카탈로그 (실행 결과 포함) | 완료 |
+| `reports/figures/03_woe_by_bin.png` | IV 상위 6개 특징의 구간별 WoE | 완료 |
 | `data/raw/` | **원본 그대로** 두는 폴더. 절대 수정하지 않음 (깃 제외) | 완료 |
 | `data/processed/` | 전처리·특징 가공 결과 저장 폴더 (깃 제외) | 완료 |
 
@@ -68,7 +86,7 @@ Kaggle **Ethereum Fraud Detection Dataset** 을 이용해, 신용평가 모형�
 |---|---|---|
 | 1 | 프로젝트 뼈대 (폴더, requirements, README, .env, .gitignore) | ✅ 완료 |
 | 2 | EDA 노트북 + 데이터 사전 | ✅ 완료 |
-| 3 | WoE / IV 계산 및 IV 상위 15개 특징 | ⬜ 대기 |
+| 3 | WoE / IV 계산 및 IV 상위 15개 특징 | ✅ 완료 |
 | 4 | 모델 3종 비교 (로지스틱회귀·LightGBM·랜덤포레스트) | ⬜ 대기 |
 | 5 | SHAP 설명 (전역 중요도 + 개별 사례 2건) | ⬜ 대기 |
 | 6 | 비용 기반 임계값(cut-off) 분석 | ⬜ 대기 |
