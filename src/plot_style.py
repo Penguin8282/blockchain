@@ -25,6 +25,19 @@ COLOR_FRAUD = "#eb6834"    # 사기 주소 (FLAG=1) — 주황
 CLASS_COLORS = {0: COLOR_NORMAL, 1: COLOR_FRAUD}
 CLASS_LABELS = {0: "정상 (FLAG=0)", 1: "사기 (FLAG=1)"}
 
+# 트랙 비교용 색 (단계 4 이후). 세 색 모두 색각 이상 검증을 통과했다.
+# 다만 초록(#1baf7a)은 배경 대비가 3:1 미만이라, 이 색을 쓸 때는
+# 막대에 숫자 라벨을 직접 붙여 색에만 의존하지 않도록 해야 한다.
+COLOR_TRACK_FULL = "#2a78d6"      # full 트랙 (누수 포함) — 파랑
+COLOR_TRACK_NO_LEAK = "#eb6834"   # no_leak 트랙 (누수 최소 차단) — 주황
+COLOR_TRACK_DIAGNOSTIC = "#1baf7a"  # 진단용 (껍데기 행 제거) — 초록
+
+TRACK_COLORS = {
+    "full": COLOR_TRACK_FULL,
+    "no_leak": COLOR_TRACK_NO_LEAK,
+    "껍데기 행 제거": COLOR_TRACK_DIAGNOSTIC,
+}
+
 # 글자·격자 색 (데이터보다 눈에 덜 띄어야 하므로 회색 계열)
 COLOR_TEXT_PRIMARY = "#0b0b0b"    # 제목처럼 가장 중요한 글자
 COLOR_TEXT_SECONDARY = "#52514e"  # 축 라벨, 설명
