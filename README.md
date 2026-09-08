@@ -9,6 +9,24 @@ Kaggle **Ethereum Fraud Detection Dataset** 을 이용해, 신용평가 모형�
 
 ---
 
+## ⚠️ 이 데이터셋의 중요한 한계 (단계 2에서 발견)
+
+이 데이터에는 **정답이 새어 나오는 구조적 문제(data leakage)** 가 있습니다.
+
+| 발견 | 내용 |
+|---|---|
+| `Total ERC20 tnxs` 열 | 값이 **비어 있으면 100% 사기**(829행), **0이면 100% 정상**(4,399행) |
+| 영향 범위 | 전체 9,841행 중 **5,228행(53.1%)** 이 이 열 하나로 정답이 결정됨 |
+| 행 순서 | 앞 7,000행은 사기 0%, 8,000행 이후는 사기 100% — 두 파일을 이어붙인 흔적 |
+
+원인은 **정상 주소와 사기 주소를 서로 다른 방법으로 수집해 합쳤기 때문**으로 보입니다.
+따라서 이 데이터로 만든 모델의 AUC가 0.99여도 **현실 성능이 아닙니다.**
+
+자세한 근거는 `notebooks/01_eda.ipynb` 의 **"2-B. 데이터 누수 정밀 점검"** 절을 보세요.
+단계 3 이후로는 **누수 특징을 포함한 모델과 제외한 모델을 함께 만들어 비교**합니다.
+
+---
+
 ## 문서 지도
 
 | 경로 | 무엇을 하는 파일인가 | 상태 |
@@ -21,21 +39,26 @@ Kaggle **Ethereum Fraud Detection Dataset** 을 이용해, 신용평가 모형�
 | `src/config.py` | 경로·난수 시드·목표 열 이름 등 **모든 설정을 한곳에서** 정의 | 완료 |
 | `src/check_environment.py` | 패키지·폴더·`.env`·원본 CSV 가 준비됐는지 점검 | 완료 |
 | `src/download_dataset.py` | Kaggle 데이터셋 내려받기 (**이미 받았으면 재호출 안 함 = 캐시**) | 완료 |
-| `src/data_loader.py` | 원본 CSV 읽기 + 외부 API 결과 캐싱 | 단계 2 예정 |
+| `src/data_loader.py` | 원본 CSV 읽기, 열 이름 정리, 특징 4묶음 정의 | 완료 |
+| `src/plot_style.py` | 그래프 색·한글 글꼴을 프로젝트 전체에서 통일 | 완료 |
+| `src/build_data_dictionary.py` | `reports/data_dictionary.md` 를 자동 생성 | 완료 |
 | `src/woe_iv.py` | WoE(증거가중치)·IV(정보가치) 직접 구현 | 단계 3 예정 |
 | `src/modeling.py` | 모델 3종 학습 + 층화 5-fold 교차검증 + AUC·KS·F1 | 단계 4 예정 |
 | `src/explain.py` | SHAP 기반 전역·개별 설명 그림 생성 | 단계 5 예정 |
 | `src/threshold_analysis.py` | 비용 기반 임계값(cut-off) 분석 | 단계 6 예정 |
-| `notebooks/01_eda.ipynb` | 탐색적 데이터 분석(클래스 불균형, 결측·상수 열, 특징 4묶음) | 단계 2 예정 |
-| `reports/data_dictionary.md` | 각 열의 의미를 한국어 한 줄로 정리한 데이터 사전 | 단계 2 예정 |
+| `notebooks/01_eda.ipynb` | 탐색적 데이터 분석 + **데이터 누수 점검** (실행 결과 포함) | 완료 |
+| `reports/data_dictionary.md` | 51개 열의 한국어 설명 + 확신 수준(확실/추정/확인 필요) | 완료 |
+| `reports/feature_groups.md` | 특징 47개의 4묶음 분류표 | 완료 |
 | `reports/model_comparison.md` | 모델 3종 성능 비교 표 | 단계 4 예정 |
 | `reports/linkedin_summary.md` | 링크드인용 5줄 요약 | 단계 7 예정 |
-| `reports/figures/` | SHAP 그림 등 이미지 산출물 | 단계 5 예정 |
+| `reports/figures/01_class_balance.png` | 클래스 분포 그림 | 완료 |
+| `reports/figures/02_feature_distributions.png` | 묶음별 대표 특징 분포 비교 | 완료 |
 | `data/raw/` | **원본 그대로** 두는 폴더. 절대 수정하지 않음 (깃 제외) | 완료 |
 | `data/processed/` | 전처리·특징 가공 결과 저장 폴더 (깃 제외) | 완료 |
 
-> 데이터 폴더와 `reports/figures/` 는 용량이 크고 코드로 재생성 가능하므로 깃에 올리지 않습니다.
+> `data/raw/` 와 `data/processed/` 는 용량이 크고 코드로 재생성 가능하므로 깃에 올리지 않습니다.
 > 폴더 구조 자체는 `.gitkeep` 빈 파일로 유지됩니다.
+> 반면 `reports/figures/*.png` 는 보고서의 일부이므로 깃에 포함합니다.
 
 ---
 
@@ -44,7 +67,7 @@ Kaggle **Ethereum Fraud Detection Dataset** 을 이용해, 신용평가 모형�
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 1 | 프로젝트 뼈대 (폴더, requirements, README, .env, .gitignore) | ✅ 완료 |
-| 2 | EDA 노트북 + 데이터 사전 | ⬜ 대기 |
+| 2 | EDA 노트북 + 데이터 사전 | ✅ 완료 |
 | 3 | WoE / IV 계산 및 IV 상위 15개 특징 | ⬜ 대기 |
 | 4 | 모델 3종 비교 (로지스틱회귀·LightGBM·랜덤포레스트) | ⬜ 대기 |
 | 5 | SHAP 설명 (전역 중요도 + 개별 사례 2건) | ⬜ 대기 |
@@ -116,5 +139,13 @@ python -m src.check_environment
       `python -m src.download_dataset` 을 한 번 실행해야 합니다.
       *(참고: 개발용 원격 컨테이너에서는 `api.kaggle.com` 이 방화벽 정책으로 차단되어 있어
       자동 내려받기가 되지 않습니다. 로컬 PC 에서는 정상 동작합니다.)*
-- [ ] 열(column) 이름과 의미는 실제 CSV 를 읽어 본 뒤 단계 2에서 확정합니다.
-      의미가 불확실한 열은 `reports/data_dictionary.md` 에 **'확인 필요'** 로 표시합니다.
+- [x] 열 51개의 의미를 `reports/data_dictionary.md` 에 정리했습니다.
+- [ ] **의미가 확정되지 않은 열 3개** — 추측하지 않고 남겨 두었습니다.
+      원 데이터 제작자의 설명이나 Etherscan API 문서 확인이 필요합니다.
+  - `Index` — 9,841행인데 고유값이 4,729개뿐이라 단순 행 번호가 아님
+  - `ERC20 uniq sent addr.1` — 원본 CSV 에 같은 이름의 열이 두 개 있어 pandas 가 붙인 이름.
+    앞 열과 값이 83%만 일치하고 분포가 전혀 달라 별개의 의미로 보임
+  - `ERC20 avg time between rec 2 tnx` — `rec 2` 가 무엇을 뜻하는지 알 수 없음 (전 행이 0)
+- [ ] ERC20 금액 열들의 **단위** — 이름에는 `Ether` 가 붙어 있지만 실제로는 토큰 수량으로 보입니다.
+      토큰마다 소수점 자릿수가 다르므로, 서로 다른 토큰의 수량을 그냥 더한 값이라면
+      해석에 주의가 필요합니다.

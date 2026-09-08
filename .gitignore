@@ -13,9 +13,12 @@ data/processed/*
 !data/processed/.gitkeep
 
 # ===== 산출물 그림 =====
-# 그림은 코드로 다시 만들 수 있으므로 기본적으로 제외한다.
+# 그림(.png)은 보고서의 일부이므로 깃에 포함한다.
+# (포트폴리오로 공유할 때 GitHub 에서 바로 보이도록)
+# 그 외 임시 파일만 제외한다.
 reports/figures/*
 !reports/figures/.gitkeep
+!reports/figures/*.png
 
 # ===== 파이썬 =====
 __pycache__/
