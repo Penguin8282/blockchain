@@ -17,6 +17,14 @@ models/**
 !models/**/
 !models/**/.gitkeep
 
+# ===== 시험지 사진 =====
+# 이 저장소는 공개(public)다. 학생이 푼 시험지 사진에는 학생 필기와 이름이 들어 있으므로
+# 절대 커밋하지 않는다. 테스트용 샘플도 각자 컴퓨터의 tests/samples/ 에만 둔다.
+# (합성 시험지 생성기 tests/synthetic_exam.py 가 있어서, 사진이 없어도 테스트는 전부 돈다.)
+tests/samples/*
+!tests/samples/.gitkeep
+!tests/samples/README.md
+
 # ===== 처리 중간 산출물 =====
 # --debug 로 만든 중간 이미지와 원본/결과 비교 이미지는 매번 다시 만들 수 있다.
 debug/

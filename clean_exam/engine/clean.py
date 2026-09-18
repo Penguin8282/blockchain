@@ -1,0 +1,218 @@
+"""필기 지우기 엔진의 지휘자 — 1~6 단계를 순서대로 실행한다.
+
+CLI 로 바로 쓸 수 있다:
+    python -m engine.clean sample.jpg --out sample_clean.png [--api-key sk-ant-...] [--debug]
+
+--api-key 를 주지 않으면 판정관 없이 규칙만으로 동작한다(결과 JSON 에 api_skipped: true).
+키는 인자나 환경변수로 받되, 어디에도 기록하지 않는다.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import time
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+import cv2
+import numpy as np
+
+from engine import color_filter, finalize, graph_enhance, preprocess, stroke_filter
+from engine.settings import PROJECT_ROOT, load_config
+from engine.stroke_filter import LABEL_FIGURE, LABEL_HANDWRITING, LABEL_PRINTED
+from services.claude_client import CallStatistics
+
+
+def clean_image(
+    original_color_image: np.ndarray,
+    config: dict[str, Any],
+    api_key: str | None = None,
+    use_judge: bool = True,
+    model: str | None = None,
+    debug: bool = False,
+) -> dict[str, Any]:
+    """사진 한 장에서 필기를 지우고 인쇄 글자·그래프를 진하게 만든다.
+
+    인자:
+        original_color_image: 읽어 들인 BGR 이미지
+        config: load_config() 로 읽은 설정
+        api_key: 강사 본인의 Anthropic 키. None 이면 판정관을 건너뛴다.
+        use_judge: 강사가 화면에서 "판정관 사용"을 껐을 때 False
+        model: 쓸 모델 ID. None 이면 config 의 fast_model.
+        debug: True 면 중간 이미지를 결과에 담는다
+
+    돌려주는 값(dict):
+        cleaned_image, compare_image, quality_warnings, rectify_method,
+        label_counts, api_skipped, api_message, api_call_count, api_cost_usd,
+        elapsed_seconds, elapsed_seconds_without_api, debug_images
+    """
+    overall_started_at = time.time()
+    api_seconds = 0.0
+    statistics = CallStatistics()
+
+    # 1) 사진 보정
+    preprocess_result = preprocess.preprocess_photo(original_color_image, config)
+    working_gray = preprocess_result.normalized_gray_image
+    working_color = preprocess_result.corrected_color_image
+
+    # 2) 색 기반 필기 제거
+    working_gray, color_pen_mask = color_filter.remove_color_pen(
+        working_gray, working_color, config["color_filter"]
+    )
+
+    # 3) 연필/검정 필기 점수 매기기
+    ink_mask = stroke_filter.binarize_ink(working_gray, config["stroke_filter"])
+    labeled_image, components = stroke_filter.analyze_components(
+        working_gray, ink_mask, config["stroke_filter"]
+    )
+    rule_label_counts = dict(Counter(component.label for component in components))
+
+    debug_images = dict(preprocess_result.debug_images) if debug else {}
+    if debug:
+        debug_images["04_규칙분류"] = stroke_filter.render_classification_debug_image(
+            working_gray, labeled_image, components
+        )
+
+    # 4) 클로드 판정관 — 애매한 것만
+    if use_judge:
+        api_started_at = time.time()
+        judge_result = _run_judge(working_color, components, config, api_key, model, statistics)
+        api_seconds = time.time() - api_started_at
+    else:
+        for component in components:
+            if component.label == stroke_filter.LABEL_UNSURE:
+                component.label = LABEL_PRINTED
+        judge_result = {"api_skipped": True, "judged_count": 0, "error_kind": "disabled",
+                        "message": "판정관을 끈 상태로 처리했어요.", "call_count": 0}
+
+    # 5) 그래프·도형 보호 및 강화
+    components = graph_enhance.mark_figure_components(
+        labeled_image, components, ink_mask, config["graph_enhance"]
+    )
+    label_masks = graph_enhance.build_label_masks(labeled_image, components, working_gray.shape[:2])
+    strengthened_figure_mask = graph_enhance.strengthen_figures(
+        label_masks[LABEL_FIGURE], config["graph_enhance"]
+    )
+    # 그래프로 보호한 자리는 절대 지우지 않는다(겹치면 보호가 이긴다)
+    handwriting_mask = label_masks[LABEL_HANDWRITING].copy()
+    handwriting_mask[strengthened_figure_mask > 0] = 0
+
+    if debug:
+        debug_images["05_최종분류"] = stroke_filter.render_classification_debug_image(
+            working_gray, labeled_image, components
+        )
+        debug_images["06_지울곳"] = handwriting_mask * 255
+        debug_images["07_그래프"] = strengthened_figure_mask * 255
+
+    # 6) 최종 마무리
+    erased_image = finalize.erase_handwriting(
+        working_gray, handwriting_mask, config["color_filter"]["inpaint_radius"]
+    )
+    cleaned_image = finalize.apply_final_contrast(
+        erased_image, strengthened_figure_mask, config["finalize"]
+    )
+    compare_image = finalize.make_comparison_image(working_color, cleaned_image)
+
+    elapsed_seconds = time.time() - overall_started_at
+    return {
+        "cleaned_image": cleaned_image,
+        "compare_image": compare_image,
+        "quality_warnings": preprocess_result.quality_warnings,
+        "rectify_method": preprocess_result.rectify_method,
+        "rule_label_counts": rule_label_counts,
+        "label_counts": dict(Counter(component.label for component in components)),
+        "color_pen_pixel_ratio": float(color_pen_mask.mean()),
+        "api_skipped": judge_result["api_skipped"],
+        "api_error_kind": judge_result["error_kind"],
+        "api_message": judge_result["message"],
+        "api_call_count": judge_result["call_count"],
+        "api_judged_count": judge_result["judged_count"],
+        "api_cache_hits": statistics.cache_hit_count,
+        "api_cost_usd": round(statistics.total_cost_usd, 6),
+        "elapsed_seconds": round(elapsed_seconds, 2),
+        "elapsed_seconds_without_api": round(elapsed_seconds - api_seconds, 2),
+        "debug_images": debug_images,
+    }
+
+
+def _run_judge(working_color: np.ndarray, components: list[stroke_filter.StrokeComponent],
+               config: dict[str, Any], api_key: str | None, model: str | None,
+               statistics: CallStatistics) -> dict[str, Any]:
+    """판정관을 부른다. anthropic 패키지가 없어도 전체 처리가 멈추지 않게 감싸 둔다."""
+    from engine.claude_judge import judge_unsure_components
+
+    return judge_unsure_components(
+        corrected_color_image=working_color,
+        components=components,
+        config=config,
+        api_key=api_key,
+        model=model or config["claude"]["fast_model"],
+        cache_directory=PROJECT_ROOT / "data" / "api_cache",
+        statistics=statistics,
+        prompt_path=PROJECT_ROOT / "services" / "prompts" / "judge.txt",
+    )
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    """CLI 인자 정의."""
+    parser = argparse.ArgumentParser(
+        description="시험지 사진에서 학생 필기를 지우고 인쇄 글자·그래프만 남긴다."
+    )
+    parser.add_argument("input_path", help="처리할 시험지 사진 경로")
+    parser.add_argument("--out", required=True, help="결과 PNG 를 저장할 경로")
+    parser.add_argument("--api-key", default=None,
+                        help="Anthropic 키. 없으면 환경변수 ANTHROPIC_API_KEY 를 보고, "
+                             "그것도 없으면 판정관 없이 규칙만으로 처리한다.")
+    parser.add_argument("--no-judge", action="store_true", help="키가 있어도 판정관을 쓰지 않는다")
+    parser.add_argument("--quality", action="store_true", help="고품질 모델을 쓴다(비용↑)")
+    parser.add_argument("--debug", action="store_true", help="중간 이미지를 debug/ 에 저장한다")
+    parser.add_argument("--config", default=None, help="다른 config.yaml 경로")
+    return parser
+
+
+def main() -> int:
+    """CLI 진입점. 성공하면 0 을 돌려준다."""
+    arguments = build_argument_parser().parse_args()
+    config = load_config(arguments.config)
+
+    original_color_image = cv2.imread(arguments.input_path)
+    if original_color_image is None:
+        print(f"[오류] 사진을 열 수 없어요: {arguments.input_path}")
+        return 1
+
+    api_key = arguments.api_key or os.environ.get("ANTHROPIC_API_KEY")
+    model = config["claude"]["quality_model"] if arguments.quality else config["claude"]["fast_model"]
+
+    result = clean_image(
+        original_color_image, config,
+        api_key=api_key, use_judge=not arguments.no_judge, model=model, debug=arguments.debug,
+    )
+
+    output_path = Path(arguments.out)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), result["cleaned_image"])
+
+    compare_path = output_path.parent / f"compare_{output_path.stem}.png"
+    cv2.imwrite(str(compare_path), result["compare_image"])
+
+    if arguments.debug:
+        debug_directory = output_path.parent / "debug"
+        debug_directory.mkdir(parents=True, exist_ok=True)
+        for debug_name, debug_image in result["debug_images"].items():
+            cv2.imwrite(str(debug_directory / f"{debug_name}.png"), debug_image)
+
+    printable_result = {key: value for key, value in result.items()
+                        if key not in ("cleaned_image", "compare_image", "debug_images")}
+    print(json.dumps(printable_result, ensure_ascii=False, indent=2))
+    print(f"\n결과:      {output_path}")
+    print(f"비교 이미지: {compare_path}")
+    if arguments.debug:
+        print(f"디버그:     {output_path.parent / 'debug'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
