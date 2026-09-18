@@ -239,8 +239,16 @@ def measure_stroke_thickness(ink_mask: np.ndarray) -> tuple[np.ndarray, np.ndarr
 
 
 def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
-                       stroke_config: dict[str, Any]) -> tuple[np.ndarray, list[StrokeComponent]]:
+                       stroke_config: dict[str, Any],
+                       exclude_from_reference_mask: np.ndarray | None = None
+                       ) -> tuple[np.ndarray, list[StrokeComponent]]:
     """모든 연결 요소에 대해 근거들을 재고 손글씨 점수를 매긴다.
+
+    exclude_from_reference_mask: "인쇄 잉크는 이만큼 진하다"는 기준을 정할 때 빼고 셀 영역.
+      단원 제목 띠처럼 크고 새까만 색 면이 들어오면, 넓이로 가중한 기준이 그쪽으로 끌려가
+      **멀쩡한 검은 본문 글자가 상대적으로 흐려 보이게 되고 필기로 오인되어 지워진다**
+      (실측: 제목 띠가 있는 페이지에서 인쇄 글자 손실이 2.2% → 8.0% 로 뛰었다).
+      이미 "컬러 인쇄"라고 확정한 영역은 기준 계산에서 빼는 것이 맞다.
 
     돌려주는 값: (요소 번호가 칠해진 라벨 이미지, StrokeComponent 목록)
     """
@@ -318,9 +326,24 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
     # (사진마다 노출이 다르고, 한 장 안에서도 위치마다 인쇄 진하기가 다르므로
     #  고정 숫자를 쓰지 않고 페이지 스스로에서 기준을 정한다.
     #  면적이 큰 요소일수록 페이지의 대표 잉크이므로 면적으로 가중한다.)
-    global_darkness_reference = weighted_darkness_percentile(raw_measurements, 0.85)
+    measurements_for_reference = raw_measurements
+    if exclude_from_reference_mask is not None and exclude_from_reference_mask.sum() > 0:
+        kept: list[dict[str, Any]] = []
+        for measurement in raw_measurements:
+            left, top, width, height = measurement["bounding_box"]
+            box_slice = (slice(top, top + height), slice(left, left + width))
+            component_pixels = labeled_image[box_slice] == measurement["component_index"]
+            overlap_ratio = float(
+                (exclude_from_reference_mask[box_slice][component_pixels] > 0).mean()
+            ) if component_pixels.any() else 0.0
+            if overlap_ratio < 0.5:
+                kept.append(measurement)
+        if len(kept) >= 10:     # 표본이 너무 줄면 오히려 불안정해진다
+            measurements_for_reference = kept
+
+    global_darkness_reference = weighted_darkness_percentile(measurements_for_reference, 0.85)
     local_reference_map = build_local_darkness_reference(
-        raw_measurements, gray_image.shape[:2], global_darkness_reference
+        measurements_for_reference, gray_image.shape[:2], global_darkness_reference
     )
 
     # ── 2차 통과: 근거들을 0~1 점수로 바꾸고 합친다 ───────────────────────

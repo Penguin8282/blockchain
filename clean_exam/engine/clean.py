@@ -59,15 +59,19 @@ def clean_image(
     working_color = preprocess_result.corrected_color_image
 
     # 2) 색 기반 필기 제거
-    working_gray, color_pen_mask = color_filter.remove_color_pen(
+    working_gray, color_pen_mask, color_print_mask = color_filter.remove_color_pen(
         working_gray, working_color, config["color_filter"]
     )
 
     # 3) 연필/검정 필기 점수 매기기
     ink_mask = stroke_filter.binarize_ink(working_gray, config["stroke_filter"])
     labeled_image, components = stroke_filter.analyze_components(
-        working_gray, ink_mask, config["stroke_filter"]
+        working_gray, ink_mask, config["stroke_filter"],
+        exclude_from_reference_mask=color_print_mask,
     )
+    # 색 단계에서 "컬러 인쇄"로 확정한 영역과 겹치는 획은 인쇄로 못 박는다.
+    # 그레이스케일로 보면 색 글자가 중간 회색이라 그냥 두면 "흐리니까 연필"로 오인된다.
+    _force_color_print_labels(labeled_image, components, color_print_mask)
     rule_label_counts = dict(Counter(component.label for component in components))
 
     debug_images = dict(preprocess_result.debug_images) if debug else {}
@@ -112,7 +116,8 @@ def clean_image(
         working_gray, handwriting_mask, config["color_filter"]["inpaint_radius"]
     )
     cleaned_image = finalize.apply_final_contrast(
-        erased_image, strengthened_figure_mask, config["finalize"]
+        erased_image, strengthened_figure_mask, config["finalize"],
+        color_print_mask=color_print_mask, corrected_color_image=working_color,
     )
     compare_image = finalize.make_comparison_image(working_color, cleaned_image)
 
@@ -136,6 +141,24 @@ def clean_image(
         "elapsed_seconds_without_api": round(elapsed_seconds - api_seconds, 2),
         "debug_images": debug_images,
     }
+
+
+def _force_color_print_labels(labeled_image: np.ndarray,
+                              components: list[stroke_filter.StrokeComponent],
+                              color_print_mask: np.ndarray,
+                              minimum_overlap_ratio: float = 0.5) -> None:
+    """컬러 인쇄로 확정된 영역과 충분히 겹치는 획을 "인쇄"로 확정한다(제자리 수정)."""
+    if color_print_mask.sum() == 0:
+        return
+    for component in components:
+        left, top, width, height = component.bounding_box
+        box_slice = (slice(top, top + height), slice(left, left + width))
+        component_pixels = labeled_image[box_slice] == component.component_index
+        if not component_pixels.any():
+            continue
+        overlap_ratio = float((color_print_mask[box_slice][component_pixels] > 0).mean())
+        if overlap_ratio >= minimum_overlap_ratio:
+            component.label = LABEL_PRINTED
 
 
 def _run_judge(working_color: np.ndarray, components: list[stroke_filter.StrokeComponent],

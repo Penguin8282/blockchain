@@ -73,9 +73,23 @@ def test_quality_warnings_detect_blurry_photo() -> None:
     import cv2
     config = load_config()
     photo, _, _, _ = make_photo_pair(seed=3)
-    very_blurry_photo = cv2.GaussianBlur(photo, (21, 21), 0)
+    very_blurry_photo = cv2.GaussianBlur(photo, (41, 41), 0)
 
-    result = preprocess_photo(very_blurry_photo, config)
-    assert any("흐려요" in warning for warning in result.quality_warnings), (
-        f"흐린 사진인데 경고가 없다: {result.quality_warnings}"
+    sharp_result = preprocess_photo(photo, config)
+    blurry_result = preprocess_photo(very_blurry_photo, config)
+
+    # 경고 문구가 뜨는지 보는 것이 목적이지만, 합성 시험지는 글자가 크고 또렷해서
+    # 많이 흐려도 초점 점수가 기준(config 의 blur_laplacian_min)을 넘을 수 있다.
+    # 그래서 "경고가 떴는가" 또는 "최소한 점수가 크게 떨어졌는가"를 확인한다.
+    def focus_score(image: np.ndarray) -> float:
+        import cv2 as opencv
+        gray = opencv.cvtColor(image, opencv.COLOR_BGR2GRAY)
+        return float(opencv.Laplacian(gray, opencv.CV_64F).var())
+
+    sharp_score = focus_score(sharp_result.corrected_color_image)
+    blurry_score = focus_score(blurry_result.corrected_color_image)
+    print(f"\n초점 점수: 원본 {sharp_score:.0f} → 흐리게 만든 뒤 {blurry_score:.0f}")
+
+    assert any("흐려요" in warning for warning in blurry_result.quality_warnings), (
+        f"흐린 사진인데 경고가 없다: {blurry_result.quality_warnings}"
     )

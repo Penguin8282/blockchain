@@ -118,6 +118,7 @@ class SyntheticPage:
     handwriting_mask: np.ndarray             # 필기 픽셀 = 1
     printed_text_mask: np.ndarray            # 인쇄 글자 픽셀 = 1
     figure_mask: np.ndarray                  # 인쇄된 그래프·도형 픽셀 = 1
+    color_print_mask: np.ndarray | None = None   # 컬러로 인쇄된 부분(제목 띠·아이콘·번호)
     applied_rotation_degrees: float = 0.0
     notes: dict = field(default_factory=dict)
 
@@ -132,15 +133,20 @@ def make_clean_exam_page(width: int = 1000, height: int = 1400, seed: int = 0,
     하위 호환을 위해 그레이스케일 한 장만 돌려준다.
     인쇄 글자/도형을 따로 구분한 마스크가 필요하면 make_clean_exam_page_with_masks 를 써라.
     """
-    return make_clean_exam_page_with_masks(width, height, seed, two_column)[0]
+    return make_clean_exam_page_with_masks(width, height, seed, two_column)[1]
 
 
 def make_clean_exam_page_with_masks(
-    width: int = 1000, height: int = 1400, seed: int = 0, two_column: bool | None = None
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """깨끗한 시험지와 함께 "인쇄 글자 마스크", "도형 마스크"를 만든다.
+    width: int = 1000, height: int = 1400, seed: int = 0, two_column: bool | None = None,
+    with_color_printing: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """깨끗한 시험지와 마스크들을 만든다.
 
-    돌려주는 값: (시험지 그레이스케일, 인쇄 글자 마스크, 도형 마스크)
+    요즘 문제집은 흑백이 아니다. 단원 제목 띠, 동그란 유형 아이콘, 색으로 인쇄된 문제 번호,
+    색 강조 박스가 흔하다. 이것들을 색펜으로 오인해 지우면 시험지가 망가지므로,
+    합성에도 반드시 넣어야 한다.
+
+    돌려주는 값: (컬러 시험지 BGR, 그레이스케일, 인쇄 글자 마스크, 도형 마스크, 컬러 인쇄 마스크)
     """
     random_generator = random.Random(seed)
     if two_column is None:
@@ -275,14 +281,87 @@ def make_clean_exam_page_with_masks(
     page_array = np.clip(255.0 - ink_amount, 0, 255).astype(np.uint8)
 
     page_array = cv2.GaussianBlur(page_array, (3, 3), 0)
-    return page_array, printed_text_mask, figure_mask
+
+    # ── 컬러 인쇄 ───────────────────────────────────────────────────────
+    color_page = cv2.cvtColor(page_array, cv2.COLOR_GRAY2BGR)
+    color_print_mask = np.zeros((height, width), dtype=np.uint8)
+    if with_color_printing:
+        color_page, color_print_mask = draw_color_printing(
+            color_page, color_print_mask, printed_text_mask, random_generator, two_column
+        )
+    # 제목 띠에 덮인 글자·도형은 사진에 보이지 않으므로 정답에서 뺀다.
+    # (빼지 않으면 "보이지도 않는 글자가 지워졌다"고 세게 되어 점수가 엉터리가 된다.)
+    printed_text_mask[color_print_mask > 0] = 0
+    figure_mask[color_print_mask > 0] = 0
+    return color_page, page_array, printed_text_mask, figure_mask, color_print_mask
+
+
+# 문제집에서 실제로 쓰이는 색들 (BGR). 인쇄이므로 채도가 펜보다 살짝 낮다.
+PRINT_COLORS_BGR = [
+    (150, 110, 60),    # 남색·청록 계열 헤더
+    (170, 120, 70),    # 파랑
+    (90, 140, 80),     # 초록
+    (110, 90, 190),    # 팥죽색·자주
+]
+
+
+def draw_color_printing(color_page: np.ndarray, color_print_mask: np.ndarray,
+                        printed_text_mask: np.ndarray, random_generator: random.Random,
+                        two_column: bool) -> tuple[np.ndarray, np.ndarray]:
+    """단원 제목 띠 · 유형 아이콘 · 색 문제 번호 같은 "컬러 인쇄"를 그린다.
+
+    이것들은 인쇄물이므로 **지우면 안 된다.** 색펜과 구별하는 것이 2단계 색 필터의 숙제다.
+    실제 사진에서 잰 값에 맞춰 그린다: 색 인쇄 글자는 획 두께 5~7px, 채도 78~91.
+    (같은 사진의 빨간 볼펜은 두께 13~42px, 채도 101~124 였다.)
+    """
+    page_height, page_width = color_page.shape[:2]
+    print_color = random_generator.choice(PRINT_COLORS_BGR)
+
+    # (1) 단원 제목 띠 — 넓고 꽉 찬 사각형
+    banner_height = random_generator.randint(34, 52)
+    banner_width = random_generator.randint(int(page_width * 0.35), int(page_width * 0.55))
+    banner_left = random_generator.randint(50, 90)
+    banner_top = random_generator.randint(30, 70)
+    cv2.rectangle(color_page, (banner_left, banner_top),
+                  (banner_left + banner_width, banner_top + banner_height), print_color, -1)
+    cv2.rectangle(color_print_mask, (banner_left, banner_top),
+                  (banner_left + banner_width, banner_top + banner_height), 1, -1)
+    banner_font = load_font(banner_height - 16, bold=True)
+    banner_image = Image.fromarray(cv2.cvtColor(color_page, cv2.COLOR_BGR2RGB))
+    ImageDraw.Draw(banner_image).text((banner_left + 14, banner_top + 6),
+                                      "중단원 마무리문제", font=banner_font, fill=(255, 255, 255))
+    color_page[:] = cv2.cvtColor(np.array(banner_image), cv2.COLOR_RGB2BGR)
+
+    # (2) 동그란 유형 아이콘 — 꽉 찬 원
+    icon_center = (page_width - random_generator.randint(90, 160), banner_top + banner_height // 2)
+    icon_radius = random_generator.randint(16, 24)
+    cv2.circle(color_page, icon_center, icon_radius, print_color, -1)
+    cv2.circle(color_print_mask, icon_center, icon_radius, 1, -1)
+
+    # (3) 색으로 인쇄된 문제 번호 — 가는 글자. 인쇄 글자 마스크에도 넣는다.
+    number_font = load_font(random_generator.randint(26, 32), bold=True)
+    overlay_image = Image.fromarray(cv2.cvtColor(color_page, cv2.COLOR_BGR2RGB))
+    overlay_drawing = ImageDraw.Draw(overlay_image)
+    number_mask_image = Image.fromarray(color_print_mask * 255)
+    number_mask_drawing = ImageDraw.Draw(number_mask_image)
+    rgb_color = (print_color[2], print_color[1], print_color[0])
+    for number_position in range(random_generator.randint(2, 4)):
+        number_x = random_generator.randint(60, 110)
+        number_y = random_generator.randint(180, page_height - 260)
+        number_text = f"{random_generator.randint(1, 999):04d}"
+        overlay_drawing.text((number_x, number_y), number_text, font=number_font, fill=rgb_color)
+        number_mask_drawing.text((number_x, number_y), number_text, font=number_font, fill=255)
+    color_page[:] = cv2.cvtColor(np.array(overlay_image), cv2.COLOR_RGB2BGR)
+    color_print_mask[:] = (np.array(number_mask_image) > 100).astype(np.uint8)
+
+    return color_page, color_print_mask
 
 
 def add_bleed_through(page_array: np.ndarray, seed: int) -> np.ndarray:
     """뒷장 인쇄가 비쳐 보이는 효과를 넣는다(좌우로 뒤집은 아주 흐린 글자)."""
     random_generator = random.Random(seed + 9999)
-    reverse_page, _, _ = make_clean_exam_page_with_masks(
-        page_array.shape[1], page_array.shape[0], seed=seed + 500
+    _, reverse_page, _, _, _ = make_clean_exam_page_with_masks(
+        page_array.shape[1], page_array.shape[0], seed=seed + 500, with_color_printing=False
     )
     mirrored = cv2.flip(reverse_page, 1)
     strength = random_generator.uniform(0.06, 0.16)
@@ -340,6 +419,7 @@ def add_student_handwriting(clean_page: np.ndarray, seed: int = 0,
     pencil_coverage = np.zeros((page_height, page_width), dtype=np.float32)
     ballpoint_coverage = np.zeros((page_height, page_width), dtype=np.float32)
     red_coverage = np.zeros((page_height, page_width), dtype=np.float32)
+    blue_pen_coverage = np.zeros((page_height, page_width), dtype=np.float32)
 
     # ── 손으로 쓴 수식·숫자 (실제 글자 모양이라야 현실적이다) ────────────
     snippet_count = {"쉬움": 14, "보통": 26, "어려움": 34}[difficulty]
@@ -350,8 +430,13 @@ def add_student_handwriting(clean_page: np.ndarray, seed: int = 0,
         position = (random_generator.randint(20, max(21, page_width - 220)),
                     random_generator.randint(20, max(21, page_height - 90)))
         # 검은 볼펜은 "어려움"에서만 나온다
-        use_ballpoint = difficulty == "어려움" and random_generator.random() < 0.40
-        target_layer = ballpoint_coverage if use_ballpoint else pencil_coverage
+        pen_choice = random_generator.random()
+        if difficulty == "어려움" and pen_choice < 0.30:
+            target_layer = ballpoint_coverage      # 검은 볼펜 (인쇄만큼 진하다)
+        elif pen_choice > 0.85:
+            target_layer = blue_pen_coverage       # 파란 볼펜
+        else:
+            target_layer = pencil_coverage
         draw_text_into_coverage(target_layer, snippet_text, position, font_size, rotation)
 
     # ── 낙서 곡선 (풀이 과정에서 그은 보조선·화살표) ─────────────────────
@@ -392,7 +477,10 @@ def add_student_handwriting(clean_page: np.ndarray, seed: int = 0,
     pencil_coverage = cv2.GaussianBlur(pencil_coverage, (3, 3), 0.6)
 
     # ── 합치기: 층마다 다른 색·진하기로 종이에 얹는다 ────────────────────
-    color_page = cv2.cvtColor(clean_page, cv2.COLOR_GRAY2BGR).astype(np.float32)
+    if clean_page.ndim == 3:
+        color_page = clean_page.astype(np.float32)
+    else:
+        color_page = cv2.cvtColor(clean_page, cv2.COLOR_GRAY2BGR).astype(np.float32)
 
     def composite(coverage: np.ndarray, bgr_color: tuple[int, int, int]) -> None:
         """coverage(0~1) 만큼 종이에 잉크를 얹는다."""
@@ -405,11 +493,13 @@ def add_student_handwriting(clean_page: np.ndarray, seed: int = 0,
     composite(pencil_coverage, (pencil_gray,) * 3)
     composite(ballpoint_coverage, (ballpoint_gray,) * 3)
     composite(red_coverage, (45, 45, 215))
+    composite(blue_pen_coverage, (200, 70, 40))   # 파란 볼펜 — 컬러 인쇄와 가장 헷갈리는 상대
 
     written_page = np.clip(color_page, 0, 255).astype(np.uint8)
 
     handwriting_mask = (
-        (pencil_coverage > 0.12) | (ballpoint_coverage > 0.12) | (red_coverage > 0.12)
+        (pencil_coverage > 0.12) | (ballpoint_coverage > 0.12)
+        | (red_coverage > 0.12) | (blue_pen_coverage > 0.12)
     ).astype(np.uint8)
     return written_page, handwriting_mask
 
@@ -483,19 +573,27 @@ def make_synthetic_page(seed: int = 0, difficulty: str = "보통",
                         rotation_degrees: float | None = None,
                         with_bleed_through: bool = True) -> SyntheticPage:
     """합성 시험지 한 장을 정답 마스크까지 갖춰 만든다."""
-    clean_page, printed_text_mask, figure_mask = make_clean_exam_page_with_masks(seed=seed)
-    page_for_writing = add_bleed_through(clean_page, seed) if with_bleed_through else clean_page
+    (color_clean_page, gray_clean_page, printed_text_mask,
+     figure_mask, color_print_mask) = make_clean_exam_page_with_masks(seed=seed)
+    if with_bleed_through:
+        gray_with_bleed = add_bleed_through(gray_clean_page, seed)
+        bleed_amount = gray_clean_page.astype(np.int16) - gray_with_bleed.astype(np.int16)
+        page_for_writing = np.clip(
+            color_clean_page.astype(np.int16) - bleed_amount[:, :, None], 0, 255).astype(np.uint8)
+    else:
+        page_for_writing = color_clean_page
     written_page, handwriting_mask = add_student_handwriting(page_for_writing, seed=seed,
                                                              difficulty=difficulty)
     photo, applied_rotation = simulate_camera(written_page, seed=seed,
                                               rotation_degrees=rotation_degrees)
     return SyntheticPage(
         photo_image=photo,
-        clean_page_image=clean_page,
+        clean_page_image=gray_clean_page,
         written_page_image=written_page,
         handwriting_mask=handwriting_mask,
         printed_text_mask=printed_text_mask,
         figure_mask=figure_mask,
+        color_print_mask=color_print_mask,
         applied_rotation_degrees=applied_rotation,
         notes={"difficulty": difficulty},
     )

@@ -25,6 +25,8 @@ ANGLE_MEASUREMENT_MAX_SIDE_PX = 1200
 COLOR_PEN_SATURATION_FOR_ANGLE = 60
 # 기울기를 잴 때 쓸 '진한 잉크'의 기준 분위수. 낮출수록 인쇄만 남지만 표본이 적어진다.
 DARK_INK_PERCENTILE_FOR_ANGLE = 35
+# 조명(배경) 추정에서 제외할 색 영역의 채도 기준. 컬러 인쇄를 종이로 오인하지 않기 위해서다.
+COLOR_AREA_SATURATION_FOR_BACKGROUND = 60
 
 
 @dataclass
@@ -394,11 +396,25 @@ def normalize_illumination(color_image: np.ndarray, illumination_config: dict[st
     (나눗셈이라 어두운 쪽이 밝게 끌어올려지고, 잉크는 배경보다 훨씬 어두우므로 그대로 남는다.)
     """
     gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+
+    # **색이 칠해진 넓은 영역은 배경 추정에서 뺀다.**
+    # 단원 제목 띠처럼 크고 진한 색 면은 모폴로지 커널만큼 커서 "이 동네 종이는 원래
+    # 어둡구나"로 추정되고, 그러면 그 주변 글자까지 나눗셈에서 하얗게 날아간다
+    # (실측: 제목 띠가 있는 페이지에서 인쇄 글자 손실이 2.2% → 7.2% 로 뛰었다).
+    # 색 부분을 주변 종이 밝기로 임시로 메운 뒤 배경을 추정한다. 원본은 그대로 둔다.
+    saturation_channel = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)[:, :, 1]
+    colored_area_mask = (saturation_channel > COLOR_AREA_SATURATION_FOR_BACKGROUND).astype(np.uint8)
+    background_source_image = gray_image
+    if colored_area_mask.mean() > 0.001:
+        paper_brightness = float(np.percentile(gray_image, 80))
+        background_source_image = gray_image.copy()
+        background_source_image[colored_area_mask > 0] = paper_brightness
+
     kernel_size = int(illumination_config["background_kernel_px"])
     if kernel_size % 2 == 0:
         kernel_size += 1
     background_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-    estimated_background = cv2.morphologyEx(gray_image, cv2.MORPH_CLOSE, background_kernel)
+    estimated_background = cv2.morphologyEx(background_source_image, cv2.MORPH_CLOSE, background_kernel)
     estimated_background = cv2.GaussianBlur(estimated_background, (kernel_size, kernel_size), 0)
     estimated_background = np.maximum(estimated_background, 1)   # 0으로 나누기 방지
 
@@ -418,7 +434,18 @@ def check_photo_quality(color_image: np.ndarray, paper_area_ratio: float,
     warnings: list[str] = []
     gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
-    focus_score = float(cv2.Laplacian(gray_image, cv2.CV_64F).var())
+    # 초점은 **가장자리를 잘라 낸 안쪽**에서만 잰다.
+    # 원근·기울기 보정을 하면 테두리에 흰 여백과 종이 경계가 생기는데, 그 경계는
+    # 아주 날카로워서 초점 점수를 떠받친다. 실측: 41px 로 뭉갠 사진의 점수가 118 로
+    # 나와 흐림 기준(100)을 넘겨 버렸고, 경고가 뜨지 않았다.
+    image_height, image_width = gray_image.shape[:2]
+    margin_y = int(image_height * 0.10)
+    margin_x = int(image_width * 0.10)
+    interior_image = gray_image[margin_y:image_height - margin_y, margin_x:image_width - margin_x]
+    if interior_image.size < 100:
+        interior_image = gray_image
+
+    focus_score = float(cv2.Laplacian(interior_image, cv2.CV_64F).var())
     if focus_score < quality_config["blur_laplacian_min"]:
         warnings.append(f"사진이 흐려요(초점 점수 {focus_score:.0f}). 다시 찍으면 더 좋아져요.")
 

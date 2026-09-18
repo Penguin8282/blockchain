@@ -21,21 +21,39 @@ def erase_handwriting(gray_image: np.ndarray, handwriting_mask: np.ndarray,
 
 
 def apply_final_contrast(gray_image: np.ndarray, figure_mask: np.ndarray,
-                         finalize_config: dict[str, Any]) -> np.ndarray:
-    """인쇄 글자는 또렷하게, 그래프는 완전한 검정으로, 배경은 완전한 흰색으로 만든다."""
+                         finalize_config: dict[str, Any],
+                         color_print_mask: np.ndarray | None = None,
+                         corrected_color_image: np.ndarray | None = None) -> np.ndarray:
+    """인쇄 글자는 또렷하게, 그래프는 완전한 검정으로, 배경은 완전한 흰색으로 만든다.
+
+    color_print_mask 가 주어지면 그 자리는 **원본 컬러 사진의 밝기로 되살린다.**
+    왜 필요한가: 단원 제목 띠처럼 크고 진한 색 면은 조명 정규화가 "이 동네 종이는 원래
+    어둡구나"로 착각해 배경으로 추정해 버린다. 그래서 정규화 뒤에는 하얗게 날아가 있다
+    (실측: 컬러 인쇄 손실이 9% → 27% 로 뛰었다).
+    통계가 이미 다 끝난 **맨 마지막**에 되살려야 다른 단계의 판단을 망치지 않는다.
+    """
     working_image = gray_image.astype(np.float32)
+
+    if (color_print_mask is not None and corrected_color_image is not None
+            and color_print_mask.sum() > 0):
+        original_luminance = cv2.cvtColor(corrected_color_image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        selected = color_print_mask > 0
+        working_image[selected] = np.minimum(working_image[selected], original_luminance[selected])
 
     # 배경을 먼저 하얗게 만든다.
     # 순서가 중요하다: 감마 보정은 밝은 값도 조금 어둡게 만들기 때문에, 감마 뒤에만
     # 잘라 내면 종이가 회색으로 남는다(실측: 결과 이미지의 순백 비율이 16% 에 그쳤다).
     # 그래서 감마 앞뒤로 두 번 잘라 낸다.
+    protected = (color_print_mask > 0) if color_print_mask is not None \
+        else np.zeros(working_image.shape, dtype=bool)
+
     paper_cutoff = finalize_config["background_white_cutoff"]
-    working_image[working_image >= paper_cutoff] = 255.0
+    working_image[(working_image >= paper_cutoff) & ~protected] = 255.0
 
     # 뒷장 비침(종이 뒤쪽 인쇄가 비쳐 보이는 것)을 지운다.
     # 인쇄 잉크는 훨씬 진하므로(실측 밝기 ~127) 이 기준보다 밝은 것만 지우면 안전하다.
     bleed_cutoff = finalize_config["bleed_through_cutoff"]
-    working_image[working_image >= bleed_cutoff] = 255.0
+    working_image[(working_image >= bleed_cutoff) & ~protected] = 255.0
 
     # 언샤프 마스크: 원본에서 흐린 버전을 빼면 경계가 강조된다
     blur_radius = finalize_config["unsharp_radius_px"]
@@ -50,7 +68,7 @@ def apply_final_contrast(gray_image: np.ndarray, figure_mask: np.ndarray,
 
     # 배경을 완전한 흰색으로
     white_cutoff = finalize_config["background_white_cutoff"]
-    darkened[darkened >= white_cutoff] = 255.0
+    darkened[(darkened >= white_cutoff) & ~protected] = 255.0
 
     # 그래프는 완전한 검정으로 (강화된 마스크 자리를 그대로 0 으로 찍는다)
     result_image = darkened.astype(np.uint8)
