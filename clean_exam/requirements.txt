@@ -8,4 +8,5 @@ pillow-heif>=0.16      # 아이폰 HEIC 사진 읽기
 scikit-image>=0.22     # 세선화(skeletonize) 등 OpenCV에 없는 연산
 PyYAML>=6.0            # config.yaml 읽기
 anthropic>=0.40        # 클로드 판정관 (키는 호출할 때 인자로 넘긴다)
-pytest>=8.0            # 테스트
+pytest>=8.0             # 테스트
+koreanize-matplotlib>=0.1  # 합성 시험지에 쓸 나눔고딕(OFL 라이선스) 번들

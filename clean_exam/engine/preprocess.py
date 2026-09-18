@@ -168,6 +168,52 @@ def warp_to_rectangle(color_image: np.ndarray, corner_points: np.ndarray) -> np.
                                flags=cv2.INTER_CUBIC, borderValue=(255, 255, 255))
 
 
+def weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    """가중 중앙값 — 가중치 합의 절반을 넘기는 지점의 값.
+
+    평균과 달리 몇 개의 엉뚱한 값(이상치)에 흔들리지 않는다.
+    """
+    if values.size == 0:
+        return 0.0
+    sorted_order = np.argsort(values)
+    sorted_values = values[sorted_order]
+    cumulative_weights = np.cumsum(weights[sorted_order])
+    if cumulative_weights[-1] <= 0:
+        return float(np.median(values))
+    half_weight = cumulative_weights[-1] / 2.0
+    return float(sorted_values[int(np.searchsorted(cumulative_weights, half_weight))])
+
+
+def build_paper_region_mask(gray_image: np.ndarray) -> np.ndarray:
+    """밝은 종이 영역만 1로 표시한 마스크를 만든다(어두운 책상 배경을 제외하기 위해).
+
+    Otsu 로 밝기 경계를 자동으로 찾은 뒤, 가장 큰 밝은 덩어리만 남기고 살짝 깎아
+    테두리 근처를 버린다. 종이가 화면을 꽉 채운 사진에서는 전체가 종이로 나온다.
+    """
+    _, bright_mask = cv2.threshold(gray_image, 0, 1, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    bright_mask = bright_mask.astype(np.uint8)
+
+    # 구멍(글자)을 메워 종이를 하나의 덩어리로 만든다
+    fill_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_CLOSE, fill_kernel)
+
+    component_count, labeled, statistics, _ = cv2.connectedComponentsWithStats(bright_mask, 8)
+    if component_count <= 1:
+        return np.ones_like(bright_mask)
+    largest_index = 1 + int(np.argmax(statistics[1:, cv2.CC_STAT_AREA]))
+    paper_mask = (labeled == largest_index).astype(np.uint8)
+
+    # 밝은 영역이 화면 대부분이면(종이가 꽉 찬 사진) 그냥 전체를 쓴다
+    if paper_mask.mean() > 0.92:
+        return np.ones_like(paper_mask)
+
+    # 테두리 근처는 버린다(종이 가장자리 그림자·접힘이 직선으로 잡히는 것을 막는다)
+    shrink_pixels = max(3, int(min(gray_image.shape[:2]) * 0.01))
+    shrink_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * shrink_pixels + 1, 2 * shrink_pixels + 1))
+    return cv2.erode(paper_mask, shrink_kernel)
+
+
 def estimate_text_line_angle(color_image: np.ndarray, max_angle_degrees: float) -> float:
     """인쇄 텍스트 줄들의 기울기를 Hough 변환으로 구한다(단위: 도).
 
@@ -180,6 +226,13 @@ def estimate_text_line_angle(color_image: np.ndarray, max_angle_degrees: float) 
     gray_image = cv2.cvtColor(measurement_image, cv2.COLOR_BGR2GRAY)
     binary_image = cv2.adaptiveThreshold(gray_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                          cv2.THRESH_BINARY_INV, 31, 10)
+
+    # **종이 밖(책상)을 뺀다.** 책상은 종이보다 어두워서 적응형 이진화가 종이 테두리를
+    # 긴 직선으로 잡아낸다. 그 테두리는 사진이 기운 각도 그대로 누워 있어서, 보정을 하면
+    # 테두리 각도도 같이 따라 돌고 다음 회차에서 다시 측정된다 → 부호가 뒤집히며 진동한다
+    # (실측: -13.4 → +13.0 → -11.5 → +11.4 로 영원히 수렴하지 않고 캔버스만 1600→2874px 로 부풀었다).
+    paper_mask = build_paper_region_mask(gray_image)
+    binary_image[paper_mask == 0] = 0
 
     # **색펜을 뺀다.** 인쇄 잉크는 무채색이라는 것이 이 프로젝트의 기본 가정이다.
     # 빨간 동그라미·별 같은 채점 표시는 크고 진해서 각도 측정을 크게 끌어당긴다
@@ -208,14 +261,20 @@ def estimate_text_line_angle(color_image: np.ndarray, max_angle_degrees: float) 
         return 0.0
 
     measured_angles: list[float] = []
+    line_lengths: list[float] = []
     for line in reshape_hough_lines(detected_lines):
         start_x, start_y, end_x, end_y = line
         angle_degrees = np.degrees(np.arctan2(end_y - start_y, end_x - start_x))
         if abs(angle_degrees) <= max_angle_degrees:   # 세로선·대각선은 글자 줄이 아니다
             measured_angles.append(float(angle_degrees))
+            line_lengths.append(float(np.hypot(end_x - start_x, end_y - start_y)))
     if not measured_angles:
         return 0.0
-    return float(np.median(measured_angles))
+
+    # **길이로 가중한 중앙값**을 쓴다.
+    # 인쇄 텍스트 줄은 가로로 이어 붙이면 길고, 필기 조각이나 잡음에서 나온 선은 짧다.
+    # 길이로 가중하면 믿을 만한 긴 선이 결과를 결정한다.
+    return weighted_median(np.array(measured_angles), np.array(line_lengths))
 
 
 def reshape_hough_lines(detected_lines: np.ndarray) -> np.ndarray:
@@ -248,26 +307,46 @@ def rotate_image_by_angle(color_image: np.ndarray, angle_degrees: float) -> np.n
 
 def refine_deskew(color_image: np.ndarray, max_angle_degrees: float,
                   maximum_passes: int = 3, tolerance_degrees: float = 0.8) -> tuple[np.ndarray, float]:
-    """텍스트 줄이 수평이 될 때까지 기울기 보정을 여러 번 반복한다.
+    """텍스트 줄이 수평이 될 때까지 기울기 보정을 반복하되, **원본에서 한 번만** 돌린다.
 
     왜 반복하나: 크게 기울어진 사진에서는 기울기 측정 자체가 조금 빗나간다.
     실측으로 12도 기울인 사진의 측정값이 10.84도였고, 한 번만 보정하면 1.3도가 남았다.
-    두세 번 반복하면 tolerance_degrees 아래로 수렴한다.
 
-    tolerance_degrees 아래면 아예 돌리지 않는 이유: 회전은 캔버스를 키우므로 페이지 배치가
-    미세하게 바뀐다. 0.5도짜리 측정 잡음 때문에 곧은 사진의 크기가 달라지는 것은 손해다.
+    왜 '원본에서 한 번만' 인가: 회전할 때마다 캔버스가 커지고 화질이 뭉개진다.
+    누적 각도를 계산해 마지막에 한 번만 돌리면 캔버스도 한 번만 커지고 화질 손해도 한 번뿐이다.
+    (그전에는 회차마다 돌려서 캔버스가 1600 → 2874px 까지 부푼 적이 있다.)
+
+    왜 진동을 감시하나: 측정이 수렴하지 않고 부호를 뒤집으며 튀는 사진이 있다.
+    그럴 때는 더 돌리지 말고 **지금까지 중 가장 반듯했던 각도**를 쓰는 것이 안전하다.
 
     돌려주는 값: (펴진 이미지, 총 회전량)
     """
-    working_image = color_image
-    total_rotation = 0.0
+    accumulated_angle = 0.0
+    best_angle = 0.0
+    smallest_measured_angle = abs(estimate_text_line_angle(color_image, max_angle_degrees))
+    if smallest_measured_angle <= tolerance_degrees:
+        return color_image, 0.0
+
     for _ in range(maximum_passes):
-        measured_angle = estimate_text_line_angle(working_image, max_angle_degrees)
-        if abs(measured_angle) <= tolerance_degrees:
+        candidate_image = rotate_image_by_angle(color_image, accumulated_angle) \
+            if accumulated_angle != 0.0 else color_image
+        measured_angle = estimate_text_line_angle(candidate_image, max_angle_degrees)
+
+        if abs(measured_angle) < smallest_measured_angle:
+            smallest_measured_angle = abs(measured_angle)
+            best_angle = accumulated_angle
+        elif accumulated_angle != 0.0:
+            # 더 나아지지 않는다 = 수렴하지 않고 튀는 중이다. 여기서 멈춘다.
             break
-        working_image = rotate_image_by_angle(working_image, measured_angle)
-        total_rotation += measured_angle
-    return working_image, total_rotation
+
+        if abs(measured_angle) <= tolerance_degrees:
+            best_angle = accumulated_angle
+            break
+        accumulated_angle += measured_angle
+
+    if abs(best_angle) < 1e-6:
+        return color_image, 0.0
+    return rotate_image_by_angle(color_image, best_angle), best_angle
 
 
 # ---------------------------------------------------------------------------

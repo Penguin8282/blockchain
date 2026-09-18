@@ -50,31 +50,41 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
       · 크고, 획 두께가 일정하고, **성긴** 요소 (도형은 속이 빈 윤곽선이라 성글다)
       · 긴 직선이 지나가는 요소
 
-    승격시키지 않는 경우(실제 샘플에서 겪은 실패를 막기 위한 안전장치):
-      · 이미 필기로 확정된 요소 → 학생이 자로 그은 듯한 긴 연필선이 "긴 직선"으로 잡혀
-        보호되고 새까맣게 칠해지는 사고가 났다. 필기 판정은 뒤집지 않는다.
+    승격시키지 않는 경우(실제로 겪은 실패를 막기 위한 안전장치):
+      · **확신을 갖고** 필기로 판정된 요소(점수 >= rescue_score_ceiling)
+        → 학생이 자로 그은 듯한 긴 연필선이 "긴 직선"으로 잡혀 보호되고 새까맣게
+          칠해지는 사고가 났다. 확신 있는 필기 판정은 뒤집지 않는다.
       · 빽빽한 요소(fill_ratio 가 큰 것) → 한글 글자 여러 개가 붙어 한 덩어리가 되면
         넓이가 커서 "큰 요소"로 잡히는데, 이것을 도형으로 칠하면 본문 일부만
         새까맣게 굵어진다("민아는", "향으로" 가 실제로 그렇게 됐다).
 
-    긴 직선을 찾을 때도 필기로 확정된 획은 빼고 찾는다.
+    반대로 **구제하는 경우**: 필기로 분류됐지만 점수가 rescue_score_ceiling 미만이면서
+    긴 직선 위에 있는 요소는 도형으로 되돌린다. 제본 쪽으로 흐려진 좌표축·표 선은
+    "흐리고 가늘고 줄 밖"이라 손글씨 점수가 높게 나오는데, 구제 경로가 없으면 그대로
+    지워진다(합성 시험지 6장 중 2장에서 도형 픽셀의 36%·68% 가 사라졌다).
+    긴 직선을 찾을 때도 확신 있는 필기 획은 빼고 찾는다.
     """
     minimum_figure_area = graph_config["min_figure_area_px"]
     maximum_thickness_cv = graph_config["thickness_cv_max"]
     maximum_fill_ratio = graph_config["figure_max_fill_ratio"]
+    rescue_score_ceiling = graph_config["rescue_score_ceiling"]
 
-    # 필기로 확정된 획을 뺀 잉크 마스크에서만 긴 직선을 찾는다
-    ink_without_handwriting = ink_mask.copy()
+    # 확신 있는 필기 획을 뺀 잉크 마스크에서만 긴 직선을 찾는다
+    ink_without_confident_handwriting = ink_mask.copy()
     for component in components:
-        if component.label != LABEL_HANDWRITING:
+        if component.label != LABEL_HANDWRITING or component.handwriting_score < rescue_score_ceiling:
             continue
         left, top, width, height = component.bounding_box
         box_slice = (slice(top, top + height), slice(left, left + width))
-        ink_without_handwriting[box_slice][labeled_image[box_slice] == component.component_index] = 0
-    long_line_mask = find_long_straight_lines(ink_without_handwriting, graph_config)
+        ink_without_confident_handwriting[box_slice][
+            labeled_image[box_slice] == component.component_index] = 0
+    long_line_mask = find_long_straight_lines(ink_without_confident_handwriting, graph_config)
 
     for component in components:
-        if component.label in (LABEL_FIGURE, LABEL_HANDWRITING):
+        if component.label == LABEL_FIGURE:
+            continue
+        # 확신 있는 필기는 뒤집지 않는다
+        if component.label == LABEL_HANDWRITING and component.handwriting_score >= rescue_score_ceiling:
             continue
         left, top, width, height = component.bounding_box
         box_slice = (slice(top, top + height), slice(left, left + width))
@@ -91,7 +101,12 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
         ) if component_pixels.any() else 0.0
         lies_on_long_line = overlapping_line_ratio >= 0.30
 
-        if is_large_sparse_and_uniform or lies_on_long_line:
+        if component.label == LABEL_HANDWRITING:
+            # 필기로 분류된 것을 되돌리는 것은 "긴 직선 위에 있다"는 확실한 근거가 있을 때만.
+            # 크기·성김만으로 되돌리면 학생의 큰 낙서가 도형으로 살아난다.
+            if lies_on_long_line:
+                component.label = LABEL_FIGURE
+        elif is_large_sparse_and_uniform or lies_on_long_line:
             component.label = LABEL_FIGURE
     return components
 
