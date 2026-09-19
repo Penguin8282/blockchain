@@ -119,6 +119,7 @@ class SyntheticPage:
     printed_text_mask: np.ndarray            # 인쇄 글자 픽셀 = 1
     figure_mask: np.ndarray                  # 인쇄된 그래프·도형 픽셀 = 1
     color_print_mask: np.ndarray | None = None   # 컬러로 인쇄된 부분(제목 띠·아이콘·번호)
+    student_graph_mask: np.ndarray | None = None # 학생이 손으로 그린 좌표축·곡선(지워야 함)
     applied_rotation_degrees: float = 0.0
     notes: dict = field(default_factory=dict)
 
@@ -401,8 +402,61 @@ def draw_text_into_coverage(coverage_layer: np.ndarray, text: str, position: tup
     np.maximum(target, stamp_array, out=target)
 
 
-def add_student_handwriting(clean_page: np.ndarray, seed: int = 0,
-                            difficulty: str = "보통") -> tuple[np.ndarray, np.ndarray]:
+def draw_student_drawn_graph(coverage_layer: np.ndarray, random_generator: random.Random) -> tuple[int, int, int, int]:
+    """학생이 연필로 직접 그린 좌표축과 곡선을 그린다.
+
+    왜 필요한가: 시험지를 풀다 보면 학생이 여백에 좌표축을 직접 그리고 포물선을 그린다.
+    이것은 **지워야 할 필기**인데, 규칙 엔진이 "긴 직선이 있으니 인쇄된 그래프다"라고
+    보호해 버리면 오히려 새까맣게 굵어진다. 그 실패를 재려면 합성에도 있어야 한다.
+
+    사람이 그은 선은 자로 댄 듯 곧지 않고 미세하게 흔들린다. 그 흔들림을 넣는 것이 핵심이다.
+
+    돌려주는 값: 그린 영역의 사각형 (x, y, 너비, 높이)
+    """
+    layer_height, layer_width = coverage_layer.shape
+    origin_x = random_generator.randint(120, max(121, layer_width - 320))
+    origin_y = random_generator.randint(300, max(301, layer_height - 260))
+    axis_length = random_generator.randint(150, 230)
+
+    def draw_wobbly_line(start_point: tuple[int, int], end_point: tuple[int, int]) -> None:
+        """두 점을 잇되 손으로 그은 것처럼 미세하게 흔들리는 선을 그린다."""
+        segment_count = 12
+        previous_point = start_point
+        for segment_index in range(1, segment_count + 1):
+            ratio = segment_index / segment_count
+            target_x = start_point[0] + (end_point[0] - start_point[0]) * ratio
+            target_y = start_point[1] + (end_point[1] - start_point[1]) * ratio
+            # 진행 방향과 상관없이 좌우로 몇 픽셀씩 흔들린다
+            target_x += random_generator.uniform(-2.5, 2.5)
+            target_y += random_generator.uniform(-2.5, 2.5)
+            current_point = (int(target_x), int(target_y))
+            cv2.line(coverage_layer, previous_point, current_point, 1.0,
+                     random_generator.randint(1, 2), cv2.LINE_AA)
+            previous_point = current_point
+
+    # 가로축·세로축
+    draw_wobbly_line((origin_x - 30, origin_y), (origin_x + axis_length, origin_y))
+    draw_wobbly_line((origin_x, origin_y + 40), (origin_x, origin_y - axis_length))
+
+    # 포물선
+    curve_width = axis_length - 20
+    vertex_x = origin_x + curve_width // 2
+    curve_points: list[tuple[int, int]] = []
+    for offset_x in range(-curve_width // 2, curve_width // 2, 6):
+        curve_y = origin_y - 20 - int(0.010 * offset_x * offset_x) + random_generator.randint(-2, 2)
+        curve_points.append((vertex_x + offset_x, curve_y))
+    for point_index in range(len(curve_points) - 1):
+        cv2.line(coverage_layer, curve_points[point_index], curve_points[point_index + 1],
+                 1.0, random_generator.randint(1, 2), cv2.LINE_AA)
+
+    left = max(0, origin_x - 40)
+    top = max(0, origin_y - axis_length - 20)
+    return (left, top, min(axis_length + 80, layer_width - left),
+            min(axis_length + 80, layer_height - top))
+
+
+def add_student_handwriting(clean_page: np.ndarray, seed: int = 0, difficulty: str = "보통",
+                            return_graph_boxes: bool = False):
     """깨끗한 시험지 위에 학생 필기를 그린다.
 
     인자:
@@ -450,6 +504,11 @@ def add_student_handwriting(clean_page: np.ndarray, seed: int = 0,
         for point_index in range(len(points) - 1):
             cv2.line(target_layer, points[point_index], points[point_index + 1],
                      1.0, random_generator.randint(1, 3), cv2.LINE_AA)
+
+    # ── 학생이 직접 그린 좌표축·포물선 (지워야 할 필기다) ───────────────
+    student_graph_boxes: list[tuple[int, int, int, int]] = []
+    for _ in range(random_generator.randint(1, 2)):
+        student_graph_boxes.append(draw_student_drawn_graph(pencil_coverage, random_generator))
 
     # ── 빨간펜 채점 표시 (동그라미 · 별 · 체크) ──────────────────────────
     if difficulty != "쉬움":
@@ -501,6 +560,14 @@ def add_student_handwriting(clean_page: np.ndarray, seed: int = 0,
         (pencil_coverage > 0.12) | (ballpoint_coverage > 0.12)
         | (red_coverage > 0.12) | (blue_pen_coverage > 0.12)
     ).astype(np.uint8)
+
+    if return_graph_boxes:
+        # 학생이 그린 그래프만 따로 표시한 마스크도 만들어 준다
+        student_graph_mask = np.zeros_like(handwriting_mask)
+        for box_left, box_top, box_width, box_height in student_graph_boxes:
+            box_slice = (slice(box_top, box_top + box_height), slice(box_left, box_left + box_width))
+            student_graph_mask[box_slice] = handwriting_mask[box_slice]
+        return written_page, handwriting_mask, student_graph_mask
     return written_page, handwriting_mask
 
 
@@ -582,8 +649,8 @@ def make_synthetic_page(seed: int = 0, difficulty: str = "보통",
             color_clean_page.astype(np.int16) - bleed_amount[:, :, None], 0, 255).astype(np.uint8)
     else:
         page_for_writing = color_clean_page
-    written_page, handwriting_mask = add_student_handwriting(page_for_writing, seed=seed,
-                                                             difficulty=difficulty)
+    written_page, handwriting_mask, student_graph_mask = add_student_handwriting(
+        page_for_writing, seed=seed, difficulty=difficulty, return_graph_boxes=True)
     photo, applied_rotation = simulate_camera(written_page, seed=seed,
                                               rotation_degrees=rotation_degrees)
     return SyntheticPage(
@@ -594,6 +661,7 @@ def make_synthetic_page(seed: int = 0, difficulty: str = "보통",
         printed_text_mask=printed_text_mask,
         figure_mask=figure_mask,
         color_print_mask=color_print_mask,
+        student_graph_mask=student_graph_mask,
         applied_rotation_degrees=applied_rotation,
         notes={"difficulty": difficulty},
     )

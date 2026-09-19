@@ -111,6 +111,15 @@ def clean_image(
         debug_images["06_지울곳"] = handwriting_mask * 255
         debug_images["07_그래프"] = strengthened_figure_mask * 255
 
+    # "지키되 강조는 안 하는" 가는 인쇄선(분수 가로줄·표 선)의 자리를 모아 둔다.
+    thin_line_mask = np.zeros(working_gray.shape[:2], dtype=np.uint8)
+    for component in components:
+        if not component.is_protected_thin_line:
+            continue
+        left, top, width, height = component.bounding_box
+        box_slice = (slice(top, top + height), slice(left, left + width))
+        thin_line_mask[box_slice][labeled_image[box_slice] == component.component_index] = 1
+
     # 6) 최종 마무리
     erased_image = finalize.erase_handwriting(
         working_gray, handwriting_mask, config["color_filter"]["inpaint_radius"]
@@ -118,6 +127,7 @@ def clean_image(
     cleaned_image = finalize.apply_final_contrast(
         erased_image, strengthened_figure_mask, config["finalize"],
         color_print_mask=color_print_mask, corrected_color_image=working_color,
+        thin_line_mask=thin_line_mask,
     )
     compare_image = finalize.make_comparison_image(working_color, cleaned_image)
 

@@ -23,8 +23,14 @@ def erase_handwriting(gray_image: np.ndarray, handwriting_mask: np.ndarray,
 def apply_final_contrast(gray_image: np.ndarray, figure_mask: np.ndarray,
                          finalize_config: dict[str, Any],
                          color_print_mask: np.ndarray | None = None,
-                         corrected_color_image: np.ndarray | None = None) -> np.ndarray:
+                         corrected_color_image: np.ndarray | None = None,
+                         thin_line_mask: np.ndarray | None = None) -> np.ndarray:
     """인쇄 글자는 또렷하게, 그래프는 완전한 검정으로, 배경은 완전한 흰색으로 만든다.
+
+    thin_line_mask 는 분수 가로줄·표 선처럼 "지키되 강조하지는 않는" 가는 인쇄선이다.
+    이 자리는 배경 흰색 처리와 뒷장 비침 제거에서 빼 준다. 가는 인쇄선은 가장자리가 흐려져
+    밝기가 높게 나오는 탓에, 빼 주지 않으면 통째로 하얗게 날아간다
+    (실측: 그래프로 강조하던 것을 인쇄로 바꾸자 도형 손실이 0.4% → 12.2% 로 뛰었다).
 
     color_print_mask 가 주어지면 그 자리는 **원본 컬러 사진의 밝기로 되살린다.**
     왜 필요한가: 단원 제목 띠처럼 크고 진한 색 면은 조명 정규화가 "이 동네 종이는 원래
@@ -44,8 +50,11 @@ def apply_final_contrast(gray_image: np.ndarray, figure_mask: np.ndarray,
     # 순서가 중요하다: 감마 보정은 밝은 값도 조금 어둡게 만들기 때문에, 감마 뒤에만
     # 잘라 내면 종이가 회색으로 남는다(실측: 결과 이미지의 순백 비율이 16% 에 그쳤다).
     # 그래서 감마 앞뒤로 두 번 잘라 낸다.
-    protected = (color_print_mask > 0) if color_print_mask is not None \
-        else np.zeros(working_image.shape, dtype=bool)
+    protected = np.zeros(working_image.shape, dtype=bool)
+    if color_print_mask is not None:
+        protected |= color_print_mask > 0
+    if thin_line_mask is not None:
+        protected |= thin_line_mask > 0
 
     paper_cutoff = finalize_config["background_white_cutoff"]
     working_image[(working_image >= paper_cutoff) & ~protected] = 255.0

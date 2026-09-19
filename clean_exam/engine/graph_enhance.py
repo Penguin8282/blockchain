@@ -68,6 +68,9 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
     maximum_thickness_cv = graph_config["thickness_cv_max"]
     maximum_fill_ratio = graph_config["figure_max_fill_ratio"]
     rescue_score_ceiling = graph_config["rescue_score_ceiling"]
+    minimum_line_coverage = graph_config["line_coverage_min"]
+    rescue_line_coverage = graph_config["rescue_line_coverage_min"]
+    minimum_figure_darkness_ratio = graph_config["figure_min_darkness_ratio"]
 
     # 확신 있는 필기 획을 뺀 잉크 마스크에서만 긴 직선을 찾는다
     ink_without_confident_handwriting = ink_mask.copy()
@@ -83,28 +86,48 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
     for component in components:
         if component.label == LABEL_FIGURE:
             continue
-        # 확신 있는 필기는 뒤집지 않는다
+        # 아주 확신 있는 필기(점수가 천장을 넘는 것)만 손대지 않는다.
+        # 천장을 높게 둔 이유는 위의 직선 덮임 근거가 훨씬 믿을 만하기 때문이다.
         if component.label == LABEL_HANDWRITING and component.handwriting_score >= rescue_score_ceiling:
             continue
         left, top, width, height = component.bounding_box
         box_slice = (slice(top, top + height), slice(left, left + width))
         component_pixels = labeled_image[box_slice] == component.component_index
 
+        # 요소 픽셀 중 얼마나 많은 부분이 "검출된 곧은 직선" 위에 놓여 있는가.
+        # 이것이 인쇄된 선 그림과 학생이 손으로 그린 그림을 가르는 가장 강한 근거다.
+        # 실측(합성 시험지 6장): 인쇄 도형 요소 0.91~0.95 / 학생이 그린 좌표축·포물선 0.00.
+        # 사람이 그은 선은 미세하게 흔들려서 Hough 변환이 곧은 직선으로 아예 못 잡는다.
+        overlapping_line_ratio = float(
+            (long_line_mask[box_slice][component_pixels] > 0).mean()
+        ) if component_pixels.any() else 0.0
+        lies_on_long_line = overlapping_line_ratio >= minimum_line_coverage
+
+        # "크고 성기고 두께가 일정하다"만으로는 부족하다. 학생이 그린 좌표축+포물선도
+        # 크고 성기고 두께가 일정하기 때문이다(실측: 이 규칙 때문에 손그림의 12% 가
+        # 도형으로 보호되어 **새까맣게 강조**됐다. 지우기는커녕 더 눈에 띄게 만든 셈이다).
+        # 그래서 인쇄 잉크다운 진하기를 함께 요구한다
+        # (실측 진하기비: 인쇄 도형선 1.56 / 학생 손그림선 0.88).
+        is_dark_like_print = (
+            component.dark_core_darkness
+            >= component.local_darkness_reference * minimum_figure_darkness_ratio
+        )
         is_large_sparse_and_uniform = (
             component.area_px >= minimum_figure_area
             and component.thickness_cv <= maximum_thickness_cv
             and component.fill_ratio <= maximum_fill_ratio
+            and is_dark_like_print
         )
-        # 요소 픽셀의 상당 부분이 긴 직선 위에 있으면 그 요소는 선 그림의 일부다
-        overlapping_line_ratio = float(
-            (long_line_mask[box_slice][component_pixels] > 0).mean()
-        ) if component_pixels.any() else 0.0
-        lies_on_long_line = overlapping_line_ratio >= 0.30
 
         if component.label == LABEL_HANDWRITING:
-            # 필기로 분류된 것을 되돌리는 것은 "긴 직선 위에 있다"는 확실한 근거가 있을 때만.
-            # 크기·성김만으로 되돌리면 학생의 큰 낙서가 도형으로 살아난다.
-            if lies_on_long_line:
+            # 필기로 분류된 것을 되돌리는 것은 "거의 전부가 곧은 직선 위에 있다"는
+            # 아주 확실한 근거가 있을 때만. 크기·성김만으로 되돌리면 학생의 큰 낙서가
+            # 도형으로 살아난다.
+            # 기준을 필기 점수가 아니라 **직선 덮임**으로 잡는 이유:
+            # 실측에서 인쇄 도형의 직선 덮임은 0.89~0.95, 학생이 손으로 그린 선은 0.00 이라
+            # 완전히 갈린다. 반면 필기 점수는 인쇄 도형도 0.81 까지 나와(제본 쪽으로 흐려진
+            # 경우) 점수로 자르면 멀쩡한 인쇄 그래프의 절반이 지워졌다.
+            if overlapping_line_ratio >= rescue_line_coverage:
                 component.label = LABEL_FIGURE
         elif is_large_sparse_and_uniform or lies_on_long_line:
             component.label = LABEL_FIGURE

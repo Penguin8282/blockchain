@@ -50,6 +50,7 @@ class StrokeComponent:
     alignment_score: float                    # c) 정렬 근거
     handwriting_score: float                  # 세 근거의 가중 평균
     label: str = LABEL_UNSURE
+    is_protected_thin_line: bool = False       # 분수 가로줄·표 선처럼 '지키되 강조는 안 하는' 선
 
 
 def binarize_ink(gray_image: np.ndarray, stroke_config: dict[str, Any]) -> np.ndarray:
@@ -385,9 +386,20 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
             + weight_alignment * alignment_score
         )
 
-        # 분수 가로줄·좌표축·표 선은 점수와 무관하게 먼저 보호한다
-        if is_long_thin_printed_line(measurement, local_reference, minimum_line_length):
-            label = LABEL_FIGURE
+        # 분수 가로줄·좌표축·표 선은 점수와 무관하게 먼저 **보호**한다.
+        # 단, "그래프(figure)"가 아니라 "인쇄(printed)"로 둔다. 둘의 차이:
+        #   figure  → 지우지 않고 **굵게 + 새까맣게** 강조한다
+        #   printed → 지우지만 않는다
+        # 이 규칙은 실제 인쇄 분수 가로줄(진하기비 0.91~1.03)과 학생이 연필로 그은
+        # 좌표축 조각(0.83~1.05)을 구별하지 못한다. 재 봐도 겹친다.
+        # 그래서 "보호"까지만 하고 "강조"는 하지 않는다. 잘못 보호해도 학생 선이
+        # 새까맣게 도드라지지는 않는다(실측: 손그림이 도형으로 강조되는 비율 7.7%).
+        # 진짜 인쇄 그래프는 5단계에서 Hough 직선 덮임(인쇄 0.91~0.95 / 손그림 0.00)으로
+        # 다시 확인해 figure 로 올린다.
+        is_protected_thin_line = is_long_thin_printed_line(
+            measurement, local_reference, minimum_line_length)
+        if is_protected_thin_line:
+            label = LABEL_PRINTED
         elif handwriting_score >= remove_threshold:
             label = LABEL_HANDWRITING
         elif handwriting_score <= keep_threshold:
@@ -412,6 +424,7 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
             alignment_score=alignment_score,
             handwriting_score=float(handwriting_score),
             label=label,
+            is_protected_thin_line=is_protected_thin_line,
         ))
 
     return labeled_image, components
