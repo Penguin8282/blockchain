@@ -327,10 +327,23 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
     # (사진마다 노출이 다르고, 한 장 안에서도 위치마다 인쇄 진하기가 다르므로
     #  고정 숫자를 쓰지 않고 페이지 스스로에서 기준을 정한다.
     #  면적이 큰 요소일수록 페이지의 대표 잉크이므로 면적으로 가중한다.)
-    measurements_for_reference = raw_measurements
+    # "인쇄 잉크는 이만큼 진하다"는 기준은 **글자만 한 것들**에서 정해야 한다.
+    # 화면 캡처의 검은 여백이나 큰 음영 덩어리가 섞이면, 넓이로 가중한 기준이 그쪽으로
+    # 끌려가 페이지의 모든 글자가 "흐리다"로 판정되어 통째로 지워진다
+    # (실제로 검은 여백이 화면의 13% 인 캡처 이미지에서 본문이 전부 사라졌다).
+    image_area = float(gray_image.shape[0] * gray_image.shape[1])
+    maximum_reference_area = image_area * stroke_config["reference_max_component_area_ratio"]
+    glyph_sized_measurements = [
+        measurement for measurement in raw_measurements
+        if measurement["area_px"] <= maximum_reference_area
+    ]
+    measurements_for_reference = (
+        glyph_sized_measurements if len(glyph_sized_measurements) >= 10 else raw_measurements
+    )
+
     if exclude_from_reference_mask is not None and exclude_from_reference_mask.sum() > 0:
         kept: list[dict[str, Any]] = []
-        for measurement in raw_measurements:
+        for measurement in measurements_for_reference:
             left, top, width, height = measurement["bounding_box"]
             box_slice = (slice(top, top + height), slice(left, left + width))
             component_pixels = labeled_image[box_slice] == measurement["component_index"]

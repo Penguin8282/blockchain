@@ -216,6 +216,39 @@ def build_paper_region_mask(gray_image: np.ndarray) -> np.ndarray:
     return cv2.erode(paper_mask, shrink_kernel)
 
 
+def crop_to_bright_page(color_image: np.ndarray, minimum_crop_ratio: float = 0.90
+                        ) -> tuple[np.ndarray, bool]:
+    """사진 둘레의 어두운 여백을 잘라내고 밝은 종이 부분만 남긴다.
+
+    왜 필요한가: 화면 캡처나 아주 어두운 책상 위에서 찍은 사진은 둘레가 새까맣다.
+    그 어두운 띠는 "아주 큰 잉크 덩어리"로 잡혀 페이지 전체의 판단을 망가뜨린다
+    (실측: 검은 여백이 화면의 13% 인 캡처 이미지에서 본문이 통째로 검은 덩어리가 됐다).
+    종이 테두리 사각형(find_paper_quadrilateral)은 이런 사진에서 자주 실패하므로,
+    더 단순하고 잘 통하는 방법을 쓴다: **가장 큰 밝은 덩어리의 사각형 범위로 자른다.**
+
+    자를 이득이 없으면(잘라도 화면의 minimum_crop_ratio 이상이 남으면) 그대로 둔다.
+    너무 작게 잘리면 종이를 잘못 찾은 것이므로 역시 그대로 둔다.
+
+    돌려주는 값: (잘린 이미지, 실제로 잘랐는지 여부)
+    """
+    image_height, image_width = color_image.shape[:2]
+    gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+    paper_mask = build_paper_region_mask(gray_image)
+    if paper_mask.mean() > 0.95:
+        return color_image, False   # 거의 전부가 종이다. 자를 것이 없다.
+
+    coordinates = cv2.findNonZero(paper_mask)
+    if coordinates is None:
+        return color_image, False
+    left, top, width, height = cv2.boundingRect(coordinates)
+    if width * height > image_width * image_height * minimum_crop_ratio:
+        return color_image, False
+    if width < image_width * 0.3 or height < image_height * 0.3:
+        return color_image, False
+
+    return color_image[top:top + height, left:left + width], True
+
+
 def estimate_text_line_angle(color_image: np.ndarray, max_angle_degrees: float) -> float:
     """인쇄 텍스트 줄들의 기울기를 Hough 변환으로 구한다(단위: 도).
 
@@ -476,8 +509,13 @@ def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -
     if preprocess_config["auto_orient"]:
         working_image, rotation_applied = detect_and_fix_orientation(working_image)
 
+    # b-0) 어두운 여백 잘라내기 (화면 캡처·어두운 책상 대응)
+    working_image, was_cropped = crop_to_bright_page(working_image)
+    if was_cropped:
+        debug_images["01a_여백자름"] = working_image.copy()
+
     # b)+c) 시험지 영역 → 원근 보정
-    rectify_method = "none"
+    rectify_method = "cropped" if was_cropped else "none"
     paper_area_ratio = 1.0
     quadrilateral = find_paper_quadrilateral(working_image, preprocess_config)
     if quadrilateral is not None:
@@ -496,8 +534,8 @@ def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -
             tolerance_degrees=preprocess_config["deskew"]["min_angle_deg"],
         )
         rotation_applied += refine_rotation
-        if rectify_method == "none":
-            rectify_method = "deskew"
+        if rectify_method in ("none", "cropped"):
+            rectify_method = "deskew" if rectify_method == "none" else "crop+deskew"
     debug_images["01_보정후"] = working_image.copy()
 
     # d) 휘어진 종이

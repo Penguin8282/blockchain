@@ -51,6 +51,57 @@ class ColorComponent:
     reason: str = ""                          # 왜 그렇게 판정했는지 (디버그용)
 
 
+def determine_saturation_threshold(corrected_color_image: np.ndarray,
+                                   color_config: dict[str, Any]) -> int:
+    """이 사진에서 "색이 있다"고 볼 채도 기준을 사진 스스로에게서 정한다.
+
+    왜 고정값을 못 쓰나: 사진마다 색이 살아 있는 정도가 천차만별이다.
+    실측한 다섯 장의 잉크 픽셀 채도 분포(중앙값 → 90분위):
+        선명한 사진      11 → 100     (고정 60 으로 잘 잡힌다)
+        빛바랜 사진       8 →  20     (고정 60 으로는 빨간펜이 **한 픽셀도** 안 잡혔다)
+        화면 캡처       255 → 255     (전부 원색)
+    빛바랜 사진에서는 빨간 동그라미가 그대로 살아남아 결과가 엉망이 됐다.
+
+    방법: 잉크(어두운) 픽셀의 채도만 모아 Otsu 로 두 무리(무채색 잉크 / 색 잉크)로 가른다.
+    두 무리의 평균 차이가 충분하지 않으면(= 색펜이 없는 흑백 시험지면) 설정값을 그대로 쓴다.
+    """
+    fallback_threshold = int(color_config["saturation_threshold"])
+    gray_image = cv2.cvtColor(corrected_color_image, cv2.COLOR_BGR2GRAY)
+    saturation_channel = cv2.cvtColor(corrected_color_image, cv2.COLOR_BGR2HSV)[:, :, 1]
+
+    ink_mask = cv2.adaptiveThreshold(gray_image, 1, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                     cv2.THRESH_BINARY_INV, 35, 12)
+    ink_saturation_values = saturation_channel[ink_mask > 0]
+    if ink_saturation_values.size < 500:
+        return fallback_threshold
+
+    otsu_threshold, _ = cv2.threshold(ink_saturation_values, 0, 255,
+                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    low_group = ink_saturation_values[ink_saturation_values <= otsu_threshold]
+    high_group = ink_saturation_values[ink_saturation_values > otsu_threshold]
+    if low_group.size < 100 or high_group.size < 100:
+        return fallback_threshold
+
+    group_gap = float(high_group.mean() - low_group.mean())
+    colored_group_mean = float(high_group.mean())
+    achromatic_group_mean = float(low_group.mean())
+
+    # 갈라진 두 무리 중 **낮은 쪽까지 이미 색이 진하다**면, 이 페이지에는 무채색 잉크가
+    # 거의 없고 전부 색이라는 뜻이다. 그럴 때 Otsu 는 "색 vs 무색"이 아니라
+    # "덜 진한 색 vs 더 진한 색"을 가르게 되어, 연한 색으로 인쇄된 제목 띠가
+    # 통째로 "색이 아님"으로 빠져 버린다. 그런 경우에는 하한을 그대로 쓴다.
+    if achromatic_group_mean > color_config["saturation_colored_group_min"]:
+        return int(color_config["saturation_threshold_floor"])
+    if (group_gap < color_config["saturation_split_min_gap"]
+            or colored_group_mean < color_config["saturation_colored_group_min"]):
+        # 두 무리로 갈리지 않거나, 갈려도 "색이 있는 쪽"이 충분히 색답지 않다
+        # = 색펜이 없는 흑백 시험지다. Otsu 는 흑백 이미지에서도 잡음을 두 무리로 가르므로
+        #   이 두 조건이 없으면 종이 얼룩을 색펜으로 오인한다(실제로 겪었다).
+        return fallback_threshold
+
+    return max(int(otsu_threshold), int(color_config["saturation_threshold_floor"]))
+
+
 def build_colored_pixel_mask(corrected_color_image: np.ndarray,
                              color_config: dict[str, Any]) -> np.ndarray:
     """채도가 높은 픽셀(색이 있는 곳)을 1로 표시한 마스크를 만든다.
@@ -61,8 +112,9 @@ def build_colored_pixel_mask(corrected_color_image: np.ndarray,
     saturation_channel = hsv_image[:, :, 1]
     value_channel = hsv_image[:, :, 2]
 
+    saturation_threshold = determine_saturation_threshold(corrected_color_image, color_config)
     colored_mask = (
-        (saturation_channel > color_config["saturation_threshold"])
+        (saturation_channel > saturation_threshold)
         & (value_channel > color_config["value_min"])
     ).astype(np.uint8)
     # 점점이 흩어진 노이즈(JPEG 색 번짐 등)를 없앤다
@@ -148,7 +200,7 @@ def find_achromatic_text_lines(corrected_color_image: np.ndarray,
 
     ink_mask = cv2.adaptiveThreshold(gray_image, 1, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                      cv2.THRESH_BINARY_INV, 35, 12)
-    ink_mask[saturation_channel > color_config["saturation_threshold"]] = 0
+    ink_mask[saturation_channel > determine_saturation_threshold(corrected_color_image, color_config)] = 0
 
     ink_gray_values = gray_image[ink_mask > 0]
     if ink_gray_values.size < 100:

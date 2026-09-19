@@ -98,18 +98,24 @@ def test_blue_printed_problem_number_survives_on_real_photo() -> None:
     number_left, number_top, number_right, number_bottom = 920, 790, 1010, 840
     # 숫자 한 자 크기(실측 18x30, 넓이 200 안팎)인 덩어리만 본다.
     # 같은 사각형 안에 빨간펜이 남긴 몇 픽셀짜리 부스러기도 들어오는데, 그건 지우는 게 맞다.
-    number_components = [
+    # 파란 계열로 판정된, 숫자 한 자 크기(실측 18x30)의 덩어리만 본다.
+    # 같은 사각형 안에 빨간펜 자국도 걸치는데 그건 지우는 게 맞다.
+    blue_number_components = [
         component for component in components
         if (number_left <= component.bounding_box[0] <= number_right
             and number_top <= component.bounding_box[1] <= number_bottom
-            and component.area_px >= 150)
+            and component.area_px >= 150
+            and "파랑" in component.reason)
     ]
-    assert len(number_components) >= 3, (
-        f"문제 번호 자리에서 숫자 크기의 색 덩어리를 찾지 못했다({len(number_components)}개)."
+    assert len(blue_number_components) >= 3, (
+        f"파란 문제 번호를 찾지 못했다({len(blue_number_components)}개). "
+        + str([(component.bounding_box, component.reason) for component in components
+               if number_left <= component.bounding_box[0] <= number_right
+               and number_top <= component.bounding_box[1] <= number_bottom])
     )
-    assert all(component.is_printed for component in number_components), (
+    assert all(component.is_printed for component in blue_number_components), (
         "파란색으로 인쇄된 문제 번호가 색펜으로 판정됐다: "
-        + str([component.reason for component in number_components])
+        + str([component.reason for component in blue_number_components])
     )
 
     # 큰 빨간펜 채점 표시는 여전히 지워져야 한다
