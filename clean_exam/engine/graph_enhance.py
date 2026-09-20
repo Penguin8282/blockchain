@@ -133,6 +133,15 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
             # 경우) 점수로 자르면 멀쩡한 인쇄 그래프의 절반이 지워졌다.
             if overlapping_line_ratio >= rescue_line_coverage:
                 component.label = LABEL_FIGURE
+            elif (component.area_px >= minimum_figure_area
+                    and component.fill_ratio <= maximum_fill_ratio
+                    and is_dark_like_print):
+                # 직선 덮임이 모자라도(저해상도에서 흐려진 선은 Hough 가 잘 못 잡는다) **인쇄만큼
+                # 진하고 크고 성긴** 요소는 지우지 않는다. 진하기가 근거다: 실측 심지비
+                # 인쇄 도형 1.00~1.56 / 학생 연필 손그림 0.88. 강조는 하지 않는다(보호만).
+                # 실측(저해상도): 도형 손실의 거의 전부가 이런 요소 둘(162x1044, 222x210)이었다.
+                component.label = LABEL_PRINTED
+                component.is_protected_thin_line = True
         elif lies_on_long_line:
             component.label = LABEL_FIGURE
         elif is_large_sparse_and_uniform:
