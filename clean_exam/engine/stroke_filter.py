@@ -23,6 +23,8 @@ import cv2
 import numpy as np
 from skimage.morphology import skeletonize
 
+from engine.shape_features import measure_internal_holes
+
 # 분류 이름 (문자열을 코드 여기저기에 흩어 놓지 않기 위해 한곳에 모아 둔다)
 LABEL_HANDWRITING = "handwriting"   # 학생 필기 → 지운다
 LABEL_PRINTED = "printed_text"      # 인쇄된 문제 글자 → 남긴다
@@ -52,6 +54,7 @@ class StrokeComponent:
     label: str = LABEL_UNSURE
     is_protected_thin_line: bool = False       # 분수 가로줄·표 선처럼 '지키되 강조는 안 하는' 선
     is_shaded_area: bool = False               # 회색으로 면을 채운 인쇄 부분(색칠된 반원·표 칸). 지키되 강조 안 함
+    is_ring_glued_blob: bool = False           # 큰 고리(동그라미)에 글자·도형이 붙어 버린 거대 덩어리. 통째로 지우지 않음
 
 
 def binarize_ink(gray_image: np.ndarray, stroke_config: dict[str, Any]) -> np.ndarray:
@@ -247,6 +250,26 @@ def is_shaded_printed_area(measurement: dict[str, Any], stroke_config: dict[str,
     )
 
 
+def is_ring_glued_blob(measurement: dict[str, Any], component_pixels: np.ndarray,
+                       stroke_config: dict[str, Any]) -> bool:
+    """큰 동그라미(고리)에 인쇄 글자·도형이 붙어 버린 거대 덩어리인지 판단한다.
+
+    색이 날아간 사진에서는 빨간펜 동그라미를 색으로 못 지운다. 그 고리는 자기가 가로지르는
+    글자·도형과 **한 덩어리로 이어져** 하나의 판정을 받는다. 그 판정이 "필기"면 고리와 함께
+    안에 든 인쇄 글자·도형까지 통째로 지워진다(실측: 흑백 시나리오에서 인쇄 글자 13.5%,
+    도형 21.1% 가 이렇게 지워졌고, 지워진 글자 요소는 4개뿐인데 픽셀은 13.5% 였다).
+    고리를 따로 떼어낼 수는 없지만, **큰 구멍을 가진 거대 덩어리는 통째로 지우지 않는다**고
+    정하면 인쇄 내용은 지켜진다. 동그라미가 남는 손해보다 문제가 사라지는 손해가 훨씬 크다.
+    """
+    _, _, width, height = measurement["bounding_box"]
+    if measurement["area_px"] < stroke_config["ring_min_area_px"]:
+        return False
+    if min(width, height) < stroke_config["ring_min_side_px"]:
+        return False
+    _, largest_hole_ratio = measure_internal_holes(component_pixels)
+    return largest_hole_ratio >= stroke_config["ring_min_hole_ratio"]
+
+
 def measure_stroke_thickness(ink_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """획 두께를 재기 위한 거리 변환과 뼈대(skeleton)를 만든다.
 
@@ -352,9 +375,24 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
     # (실제로 검은 여백이 화면의 13% 인 캡처 이미지에서 본문이 전부 사라졌다).
     image_area = float(gray_image.shape[0] * gray_image.shape[1])
     maximum_reference_area = image_area * stroke_config["reference_max_component_area_ratio"]
+    # 고리 모양(큰 구멍이 뚫린) 요소도 기준에서 뺀다. 색이 날아간 사진에서 빨간펜 동그라미는
+    # 진한 회색 고리가 되어 남는데, 이것이 기준에 들어가면 인쇄 글자의 지역 기준이 77 → 104,
+    # 69 → 103 으로 올라가 멀쩡한 글자가 "흐리다 = 연필"로 읽혀 지워졌다(실측: 인쇄 글자의
+    # 진하기 점수가 0.00 → 0.63~0.81 로 뛰었다). 동그라미는 인쇄 잉크의 대표가 아니다.
+    ring_min_area = stroke_config["reference_exclude_ring_min_area_px"]
+    ring_min_hole = stroke_config["reference_exclude_ring_min_hole_ratio"]
+
+    def is_ring_shaped(measurement: dict[str, Any]) -> bool:
+        if measurement["area_px"] < ring_min_area:
+            return False
+        left, top, width, height = measurement["bounding_box"]
+        pixels = labeled_image[top:top + height, left:left + width] == measurement["component_index"]
+        _, largest_hole_ratio = measure_internal_holes(pixels)
+        return largest_hole_ratio >= ring_min_hole
+
     glyph_sized_measurements = [
         measurement for measurement in raw_measurements
-        if measurement["area_px"] <= maximum_reference_area
+        if measurement["area_px"] <= maximum_reference_area and not is_ring_shaped(measurement)
     ]
     measurements_for_reference = (
         glyph_sized_measurements if len(glyph_sized_measurements) >= 10 else raw_measurements
@@ -431,7 +469,10 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
         is_protected_thin_line = is_long_thin_printed_line(
             measurement, local_reference, minimum_line_length)
         is_shaded_area = is_shaded_printed_area(measurement, stroke_config)
-        if is_protected_thin_line or is_shaded_area:
+        left_, top_, width_, height_ = measurement["bounding_box"]
+        ring_pixels = labeled_image[top_:top_ + height_, left_:left_ + width_] == measurement["component_index"]
+        ring_glued = is_ring_glued_blob(measurement, ring_pixels, stroke_config)
+        if is_protected_thin_line or is_shaded_area or ring_glued:
             label = LABEL_PRINTED
         elif handwriting_score >= remove_threshold:
             label = LABEL_HANDWRITING
@@ -459,6 +500,7 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
             label=label,
             is_protected_thin_line=is_protected_thin_line,
             is_shaded_area=is_shaded_area,
+            is_ring_glued_blob=ring_glued,
         ))
 
     return labeled_image, components

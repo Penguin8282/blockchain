@@ -88,7 +88,7 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
             continue
         # 회색으로 면을 채운 인쇄 부분은 도형으로 올리지 않는다.
         # 올리면 dilate + 완전 검정으로 칠해져 색칠된 반원이 새까만 덩어리가 된다.
-        if component.is_shaded_area:
+        if component.is_shaded_area or component.is_ring_glued_blob:
             continue
         # 아주 확신 있는 필기(점수가 천장을 넘는 것)만 손대지 않는다.
         # 천장을 높게 둔 이유는 위의 직선 덮임 근거가 훨씬 믿을 만하기 때문이다.

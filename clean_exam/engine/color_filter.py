@@ -32,6 +32,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from engine.shape_features import measure_internal_holes
 from engine.stroke_filter import find_printed_text_lines
 
 
@@ -213,42 +214,6 @@ def find_achromatic_text_lines(corrected_color_image: np.ndarray,
     line_heights = [bottom - top for top, bottom in text_lines]
     typical_line_height = float(np.median(line_heights)) if line_heights else 0.0
     return text_lines, typical_line_height
-
-
-def measure_internal_holes(component_pixels: np.ndarray) -> tuple[float, float]:
-    """덩어리 안의 "구멍"을 재서 (메웠을 때의 꽉참, 가장 큰 구멍의 비율)을 돌려준다.
-
-    왜 구멍을 보나: 제목 띠와 동그라미를 가르는 가장 확실한 차이가 구멍의 생김새다.
-
-      · 색으로 인쇄된 제목 띠 → 흰 글자가 **자잘한 구멍 여러 개**를 뚫는다.
-        그래서 단순 꽉참은 0.41 까지 떨어지지만, 가장 큰 구멍 하나는 아주 작다.
-      · 색펜 동그라미     → 가운데에 **큰 구멍 하나**가 뚫려 있다.
-
-    단순 꽉참만 보면 둘이 겹쳐서(띠 0.41 vs 동그라미 0.30) 구별이 안 되고,
-    구멍을 다 메워 버리면 동그라미도 꽉 찬 원반이 되어 구별이 안 된다.
-    "구멍이 자잘한가, 하나가 큰가"가 답이다.
-    """
-    component_height, component_width = component_pixels.shape
-    box_area = float(max(component_height * component_width, 1))
-
-    background = (~component_pixels).astype(np.uint8)
-    hole_count, hole_labels, hole_statistics, _ = cv2.connectedComponentsWithStats(background, 4)
-
-    # 사각형 테두리에 닿은 배경 덩어리는 "바깥"이지 구멍이 아니다
-    border_labels = set(hole_labels[0, :]) | set(hole_labels[-1, :]) \
-        | set(hole_labels[:, 0]) | set(hole_labels[:, -1])
-
-    total_hole_area = 0.0
-    largest_hole_area = 0.0
-    for hole_index in range(1, hole_count):
-        if hole_index in border_labels:
-            continue
-        hole_area = float(hole_statistics[hole_index, cv2.CC_STAT_AREA])
-        total_hole_area += hole_area
-        largest_hole_area = max(largest_hole_area, hole_area)
-
-    filled_area = float(component_pixels.sum()) + total_hole_area
-    return filled_area / box_area, largest_hole_area / box_area
 
 
 def measure_closed_fill(component_pixels: np.ndarray, max_thickness_px: float) -> float:
