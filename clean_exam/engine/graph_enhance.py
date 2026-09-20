@@ -133,8 +133,18 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
             # 경우) 점수로 자르면 멀쩡한 인쇄 그래프의 절반이 지워졌다.
             if overlapping_line_ratio >= rescue_line_coverage:
                 component.label = LABEL_FIGURE
-        elif is_large_sparse_and_uniform or lies_on_long_line:
+        elif lies_on_long_line:
             component.label = LABEL_FIGURE
+        elif is_large_sparse_and_uniform:
+            # "크고 성기고 두께 일정하고 진함"은 인쇄 곡선(원·포물선)과 **색이 날아간 사진의
+            # 빨간펜 동그라미**를 구별하지 못한다 — 둘 다 진하고 고른 큰 고리다.
+            # 실측(흑백 저장 시나리오): 옛 빨간펜 동그라미의 76.9% 가 도형으로 승격돼
+            # 새까맣게 강조됐다. 지워지기는커녕 더 눈에 띄는 최악의 결과다.
+            # 그래서 이 규칙은 **보호(지우지 않음)까지만** 하고 강조(굵게·검정)는 하지 않는다.
+            # 강조는 Hough 직선 덮임으로 확인된 도형만 받는다. 인쇄 곡선이 굵어지지 않는 손해는
+            # 작고, 학생 동그라미가 새까매지는 손해는 크다.
+            component.label = LABEL_PRINTED
+            component.is_protected_thin_line = True   # 마지막 흰색 처리에서도 지킨다
     return components
 
 
