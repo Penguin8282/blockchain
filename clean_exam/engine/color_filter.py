@@ -45,6 +45,7 @@ class ColorComponent:
     max_thickness_px: float                   # 획의 가장 두꺼운 곳
     fill_ratio: float                         # 넓이 ÷ 사각형 넓이 (구멍은 뺀 값)
     filled_fill_ratio: float                  # 내부 구멍을 메웠을 때의 꽉참
+    closed_fill_ratio: float                  # 작은 닫힘 연산으로 글자 틈을 메웠을 때의 꽉참
     largest_hole_ratio: float                 # 가장 큰 내부 구멍 ÷ 사각형 넓이
     mean_saturation: float
     is_printed: bool = False                  # True = 컬러 인쇄(지키기), False = 색펜(지우기)
@@ -250,6 +251,22 @@ def measure_internal_holes(component_pixels: np.ndarray) -> tuple[float, float]:
     return filled_area / box_area, largest_hole_area / box_area
 
 
+def measure_closed_fill(component_pixels: np.ndarray, max_thickness_px: float) -> float:
+    """획 두께의 1/3 크기 닫힘(closing) 연산으로 **글자 틈만** 메운 뒤의 꽉참을 잰다.
+
+    왜 필요한가: 저해상도 사진을 키우면 제목 띠의 흰 글자가 띠 가장자리까지 번져서
+    "닫힌 구멍"이 아니라 "열린 통로"가 된다. 그러면 구멍 메우기로는 꽉참이 안 올라간다
+    (실측: 고해상도 띠 1.00 → 저해상도 띠 0.63, 그래서 색펜으로 오인돼 지워졌다).
+    띠 두께의 1/3 짜리 작은 닫힘은 글자 틈(몇 px)은 메우지만, 비스듬히 그은 굵은 펜 획의
+    큰 빈 모서리나 동그라미의 큰 구멍은 못 메운다. 그래서 띠만 골라 복원된다.
+    """
+    kernel_size = int(max(3, min(15, round(max_thickness_px / 3.0))))
+    kernel_size |= 1
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    closed = cv2.morphologyEx(component_pixels.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
+    return float(closed.sum()) / float(max(component_pixels.size, 1))
+
+
 def classify_color_components(corrected_color_image: np.ndarray,
                               color_config: dict[str, Any]) -> tuple[list[ColorComponent], np.ndarray]:
     """색 덩어리를 하나씩 보고 "컬러 인쇄"와 "색펜"으로 나눈다.
@@ -297,6 +314,7 @@ def classify_color_components(corrected_color_image: np.ndarray,
             max_thickness = float(2.0 * distance_map[box_slice][component_pixels].max())
             fill_ratio = area_px / float(max(width * height, 1))
             filled_fill_ratio, largest_hole_ratio = measure_internal_holes(component_pixels)
+            closed_fill_ratio = measure_closed_fill(component_pixels, max_thickness)
             mean_saturation = float(saturation_channel[box_slice][component_pixels].mean())
 
             # 계열별 라벨 번호가 겹치지 않도록 전역 번호를 새로 붙인다
@@ -308,6 +326,7 @@ def classify_color_components(corrected_color_image: np.ndarray,
                 max_thickness_px=max_thickness,
                 fill_ratio=fill_ratio,
                 filled_fill_ratio=filled_fill_ratio,
+                closed_fill_ratio=closed_fill_ratio,
                 largest_hole_ratio=largest_hole_ratio,
                 mean_saturation=mean_saturation,
             )
@@ -338,6 +357,13 @@ def classify_color_components(corrected_color_image: np.ndarray,
             shorter_side = min(width, height)
             aspect_ratio = longer_side / max(shorter_side, 1)
 
+            # 이미지 테두리에 닿는 색 면은 인쇄 띠·아이콘이 아니라 **사진에 들어온 책상·물건**이다.
+            # 실제 사진에서 종이 위쪽에 보이던 초록 책상 면(1101x144, 10만 픽셀)이 "가로 띠"로
+            # 잡혀 지켜지는 바람에 순백 비율이 81% → 73% 로 떨어졌다. 인쇄 띠는 페이지 안쪽에 있다.
+            image_height, image_width = colored_mask.shape[:2]
+            touches_image_border = (left == 0 or top == 0
+                                    or left + width >= image_width or top + height >= image_height)
+
             # 길쭉한 덩어리는 두 가지일 수 있다: 넓고 납작한 **제목 띠**(인쇄)와
             # 길게 그은 **굵은 펜 획**. 띠는 축에 나란한 반듯한 직사각형이라 사각형을
             # 거의 100% 채우지만, 비스듬히 그은 펜 획은 사각형 모서리가 비어 0.7 언저리다.
@@ -346,11 +372,34 @@ def classify_color_components(corrected_color_image: np.ndarray,
             if aspect_ratio > maximum_solid_aspect:
                 required_fill = color_config["print_solid_elongated_min_fill"]
 
-            if (filled_fill_ratio >= required_fill
+            # 꽉참은 "구멍 메운 값"과 "글자 틈 닫은 값" 중 큰 쪽을 쓴다(둘 다 띠를 복원하는 방법이고,
+            # 동그라미의 큰 구멍은 어느 쪽으로도 안 메워진다)
+            effective_fill_ratio = max(filled_fill_ratio, closed_fill_ratio)
+            if (effective_fill_ratio >= required_fill
                     and largest_hole_ratio <= maximum_hole_ratio
-                    and shorter_side >= minimum_solid_side):
+                    and shorter_side >= minimum_solid_side
+                    and not touches_image_border):
                 component.is_printed = True
                 component.reason = f"빽빽하게 채워진 색 면({family_name})"
+
+            # (C) 가로로 놓인 굵은 띠: 저해상도에서는 흰 글자가 넓게 번져 띠의 꽉참이 0.6 대로
+            # 떨어지지만, **최대 두께가 띠의 높이와 같다**는 성질은 흔들리지 않는다
+            # (실측: 두께 36/높이 39, 두께 31/높이 32). 펜 획은 아무리 굵어도 두께가 획 굵기다.
+            # 실제 사진에서 이 조건을 거의 통과한 유일한 펜 자국(굵은 빨간 획 22x195)은
+            # **세로**로 놓여 있었다. 인쇄 띠는 가로로 놓이므로 가로 방향만 인정한다.
+            # 대가: 가로로 길게 그은 굵은 형광펜 자국은 인쇄로 봐서 안 지운다(지우면 밑의 글자도
+            #       같이 사라지므로 안 지우는 쪽이 오히려 안전하다).
+            is_horizontal_band = (
+                width >= height * color_config["band_min_aspect"]
+                and height >= minimum_solid_side
+                and max_thickness >= height * color_config["band_thickness_to_height_min"]
+                and largest_hole_ratio <= maximum_hole_ratio
+                and effective_fill_ratio >= color_config["band_min_fill"]
+                and not touches_image_border
+            )
+            if is_horizontal_band and not component.is_printed:
+                component.is_printed = True
+                component.reason = f"가로로 놓인 굵은 인쇄 띠({family_name})"
 
             if not component.is_printed:
                 component.reason = f"색펜으로 판단({family_name})"
