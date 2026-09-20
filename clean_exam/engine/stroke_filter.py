@@ -51,6 +51,7 @@ class StrokeComponent:
     handwriting_score: float                  # 세 근거의 가중 평균
     label: str = LABEL_UNSURE
     is_protected_thin_line: bool = False       # 분수 가로줄·표 선처럼 '지키되 강조는 안 하는' 선
+    is_shaded_area: bool = False               # 회색으로 면을 채운 인쇄 부분(색칠된 반원·표 칸). 지키되 강조 안 함
 
 
 def binarize_ink(gray_image: np.ndarray, stroke_config: dict[str, Any]) -> np.ndarray:
@@ -226,6 +227,24 @@ def is_long_thin_printed_line(measurement: dict[str, Any], local_reference: floa
     # (평균으로 재면 분수 가로줄 74~91 이라 연필과 섞여 전부 지워질 뻔했다.)
     is_dark_enough = measurement["dark_core_darkness"] >= local_reference * 0.80
     return aspect_ratio >= 8.0 and longer_side >= minimum_length_px and is_dark_enough
+
+
+def is_shaded_printed_area(measurement: dict[str, Any], stroke_config: dict[str, Any]) -> bool:
+    """색칠된 반원·표 칸·막대처럼 **회색으로 면을 채운 인쇄 부분**인지 판단한다.
+
+    왜 필요한가: 채운 면은 중간 회색이라 진하기로 보면 "흐리다 = 연필"로 읽혀 통째로 지워진다
+    (실측: 합성 음영 도형의 69.6% 가 사라졌고, 실제 적분 반원 사진에서도 회색 덩어리로 뭉개졌다).
+    하지만 연필 낙서는 절대 이런 모양이 아니다:
+      · 넓이가 크고            (연필 획은 가늘다)
+      · 사각형을 빽빽이 채우며  (낙서는 성글다. 실측 손글씨 꽉참 0.30 안팎)
+      · 농도가 고르다           (연필은 사각사각 들쭉날쭉. 인쇄 망점은 고르다)
+    세 가지가 동시에 맞으면 면을 채운 인쇄로 본다.
+    """
+    return (
+        measurement["area_px"] >= stroke_config["shaded_min_area_px"]
+        and measurement["fill_ratio"] >= stroke_config["shaded_min_fill"]
+        and measurement["darkness_std"] <= stroke_config["shaded_max_darkness_std"]
+    )
 
 
 def measure_stroke_thickness(ink_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -411,7 +430,8 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
         # 다시 확인해 figure 로 올린다.
         is_protected_thin_line = is_long_thin_printed_line(
             measurement, local_reference, minimum_line_length)
-        if is_protected_thin_line:
+        is_shaded_area = is_shaded_printed_area(measurement, stroke_config)
+        if is_protected_thin_line or is_shaded_area:
             label = LABEL_PRINTED
         elif handwriting_score >= remove_threshold:
             label = LABEL_HANDWRITING
@@ -438,6 +458,7 @@ def analyze_components(gray_image: np.ndarray, ink_mask: np.ndarray,
             handwriting_score=float(handwriting_score),
             label=label,
             is_protected_thin_line=is_protected_thin_line,
+            is_shaded_area=is_shaded_area,
         ))
 
     return labeled_image, components

@@ -39,6 +39,9 @@ class PreprocessResult:
     rotation_applied_degrees: float = 0.0      # 실제로 돌린 각도
     paper_area_ratio: float = 1.0              # 시험지가 화면에서 차지하는 비율
     quality_warnings: list[str] = field(default_factory=list)   # 강사에게 보여줄 한국어 경고
+    working_scale: float = 1.0                 # 처리용으로 키우거나 줄인 배율 (원본 → 처리 이미지)
+    crop_box: tuple[int, int, int, int] | None = None   # 어두운 여백을 잘라냈다면 그 (x, y, 너비, 높이), 처리 좌표 기준
+    shaded_area_mask: np.ndarray | None = None  # 회색으로 면을 채운 인쇄 부분(색칠된 반원·표 칸) = 1
     debug_images: dict[str, np.ndarray] = field(default_factory=dict)  # --debug 용 중간 이미지
 
 
@@ -217,7 +220,7 @@ def build_paper_region_mask(gray_image: np.ndarray) -> np.ndarray:
 
 
 def crop_to_bright_page(color_image: np.ndarray, minimum_crop_ratio: float = 0.90
-                        ) -> tuple[np.ndarray, bool]:
+                        ) -> tuple[np.ndarray, tuple[int, int, int, int] | None]:
     """사진 둘레의 어두운 여백을 잘라내고 밝은 종이 부분만 남긴다.
 
     왜 필요한가: 화면 캡처나 아주 어두운 책상 위에서 찍은 사진은 둘레가 새까맣다.
@@ -229,24 +232,24 @@ def crop_to_bright_page(color_image: np.ndarray, minimum_crop_ratio: float = 0.9
     자를 이득이 없으면(잘라도 화면의 minimum_crop_ratio 이상이 남으면) 그대로 둔다.
     너무 작게 잘리면 종이를 잘못 찾은 것이므로 역시 그대로 둔다.
 
-    돌려주는 값: (잘린 이미지, 실제로 잘랐는지 여부)
+    돌려주는 값: (잘린 이미지, 잘라낸 사각형 (x, y, 너비, 높이) — 안 잘랐으면 None)
     """
     image_height, image_width = color_image.shape[:2]
     gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
     paper_mask = build_paper_region_mask(gray_image)
     if paper_mask.mean() > 0.95:
-        return color_image, False   # 거의 전부가 종이다. 자를 것이 없다.
+        return color_image, None   # 거의 전부가 종이다. 자를 것이 없다.
 
     coordinates = cv2.findNonZero(paper_mask)
     if coordinates is None:
-        return color_image, False
+        return color_image, None
     left, top, width, height = cv2.boundingRect(coordinates)
     if width * height > image_width * image_height * minimum_crop_ratio:
-        return color_image, False
+        return color_image, None
     if width < image_width * 0.3 or height < image_height * 0.3:
-        return color_image, False
+        return color_image, None
 
-    return color_image[top:top + height, left:left + width], True
+    return color_image[top:top + height, left:left + width], (left, top, width, height)
 
 
 def estimate_text_line_angle(color_image: np.ndarray, max_angle_degrees: float) -> float:
@@ -421,12 +424,22 @@ def dewarp_by_horizontal_bands(color_image: np.ndarray, band_count: int, max_ang
 # ---------------------------------------------------------------------------
 # e) 조명 불균일·그림자 제거
 # ---------------------------------------------------------------------------
-def normalize_illumination(color_image: np.ndarray, illumination_config: dict[str, Any]) -> np.ndarray:
+def normalize_illumination(color_image: np.ndarray, illumination_config: dict[str, Any]
+                           ) -> tuple[np.ndarray, np.ndarray]:
     """손 그림자, 창가 밝기 차이를 없애고 "흰 배경 + 검은 잉크" 그레이스케일을 만든다.
 
     원리: 글자보다 훨씬 큰 커널로 모폴로지 닫기(closing)를 하면 글자가 뭉개져 사라지고
     '종이 밝기 지도'(배경)만 남는다. 원본을 이 배경으로 나누면 조명 차이가 사라진다.
-    (나눗셈이라 어두운 쪽이 밝게 끌어올려지고, 잉크는 배경보다 훨씬 어두우므로 그대로 남는다.)
+
+    **두 배율로 배경을 잰다.** 색칠된 반원·표 칸처럼 회색으로 면을 채운 인쇄 부분은
+    작은 커널(41px)보다 커서, 작은 커널은 그 회색을 "이 동네 종이 색"으로 오인한다.
+    그러면 나눗셈에서 회색 면이 통째로 흰색이 된다(실측: 합성 음영 도형의 69.6%,
+    실제 적분 반원 사진의 색칠 부분이 사라졌다).
+    그래서 큰 커널(약 300px)로도 배경을 재고, **작은 커널만 어둡게 보는 곳**(= 41~300px
+    크기의 유계 어두운 면)은 큰 커널 값을 쓴다. 손 그림자는 300px 보다 넓어 두 커널이
+    똑같이 어둡게 보므로 그대로 펴진다. 이렇게 찾은 면은 뒤 단계에서 지키도록 마스크로 돌려준다.
+
+    돌려주는 값: (정규화된 그레이스케일, 회색 채움 면 마스크)
     """
     gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
 
@@ -443,19 +456,62 @@ def normalize_illumination(color_image: np.ndarray, illumination_config: dict[st
         background_source_image = gray_image.copy()
         background_source_image[colored_area_mask > 0] = paper_brightness
 
-    kernel_size = int(illumination_config["background_kernel_px"])
-    if kernel_size % 2 == 0:
-        kernel_size += 1
-    background_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-    estimated_background = cv2.morphologyEx(background_source_image, cv2.MORPH_CLOSE, background_kernel)
-    estimated_background = cv2.GaussianBlur(estimated_background, (kernel_size, kernel_size), 0)
+    small_kernel_size = int(illumination_config["background_kernel_px"]) | 1
+    small_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (small_kernel_size, small_kernel_size))
+    small_background = cv2.morphologyEx(background_source_image, cv2.MORPH_CLOSE, small_kernel)
+    small_background = cv2.GaussianBlur(small_background, (small_kernel_size, small_kernel_size), 0)
+
+    # 큰 커널은 속도를 위해 1/4 로 줄인 사본에서 계산한다 (배경은 부드러워서 손해가 없다)
+    large_kernel_size = int(illumination_config["plateau_kernel_px"])
+    shrink = 4
+    shrunk = cv2.resize(background_source_image, None, fx=1.0 / shrink, fy=1.0 / shrink,
+                        interpolation=cv2.INTER_AREA)
+    shrunk_kernel_size = max(3, (large_kernel_size // shrink) | 1)
+    large_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (shrunk_kernel_size, shrunk_kernel_size))
+    large_background = cv2.morphologyEx(shrunk, cv2.MORPH_CLOSE, large_kernel)
+    large_background = cv2.GaussianBlur(large_background, (shrunk_kernel_size, shrunk_kernel_size), 0)
+    large_background = cv2.resize(large_background, (gray_image.shape[1], gray_image.shape[0]),
+                                  interpolation=cv2.INTER_LINEAR)
+
+    plateau_ratio = float(illumination_config["plateau_ratio"])
+    is_bounded_dark_area = small_background.astype(np.float32) < large_background.astype(np.float32) * plateau_ratio
+
+    # 회색 채움 면 마스크: 유계 어두운 면 중 실제로 종이보다 눈에 띄게 어두운 픽셀.
+    # 작은 부스러기는 버린다(글자 하나가 우연히 걸린 것).
+    shaded_area_mask = (
+        is_bounded_dark_area
+        & (gray_image.astype(np.float32) < large_background.astype(np.float32) * 0.92)
+    ).astype(np.uint8)
+    shaded_area_mask = cv2.morphologyEx(shaded_area_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    # 어느 면을 "인쇄된 회색 채움"으로 인정할지 거른다.
+    #   · 이미지 테두리에 닿는 면은 버린다 — 실제 사진에서 잡힌 큰 오탐(손가락, 책상 가장자리,
+    #     가장자리 그림자: 한 장에서 화면의 29%)은 **전부** 테두리에 닿아 있었다. 인쇄된
+    #     색칠 면(반원, 표 칸, 막대)은 페이지 안쪽에 있어 테두리에 닿지 않는다.
+    #   · 페이지의 큰 비율을 차지하는 면도 버린다 — 그건 조명이지 그림이 아니다.
+    #   · 너무 작은 면은 글자 하나가 우연히 걸린 것이다.
+    component_count, labels, statistics, _ = cv2.connectedComponentsWithStats(shaded_area_mask, 8)
+    minimum_area = int(illumination_config["plateau_min_area_px"])
+    maximum_area = float(illumination_config["plateau_max_area_ratio"]) * gray_image.size
+    mask_height, mask_width = shaded_area_mask.shape
+    for index in range(1, component_count):
+        left, top, width, height, area = statistics[index]
+        touches_border = left == 0 or top == 0 or left + width >= mask_width or top + height >= mask_height
+        if area < minimum_area or area > maximum_area or touches_border:
+            shaded_area_mask[labels == index] = 0
+
+    # 큰 커널 배경은 **필터를 통과한 인쇄 면 안에서만** 쓴다. 그 밖(손 그림자, 책상 가장자리)은
+    # 작은 커널 배경으로 예전처럼 편다. 처음엔 유계 어두운 면 전체에 큰 커널을 썼더니
+    # 41~300px 크기의 그림자 구역이 안 펴져 순백 비율이 84% → 67% 로 떨어졌다(실측).
+    # 면 가장자리에서 배경이 급변하지 않도록 마스크를 조금 넓혀서 적용한다.
+    use_large_background = cv2.dilate(shaded_area_mask, small_kernel) > 0
+    estimated_background = np.where(use_large_background, large_background, small_background)
     estimated_background = np.maximum(estimated_background, 1)   # 0으로 나누기 방지
 
     normalized = gray_image.astype(np.float32) / estimated_background.astype(np.float32)
     # 밝은 쪽 분위수를 흰색(255)에 맞춘다
     white_reference = np.percentile(normalized, illumination_config["clip_percentile"])
     normalized = np.clip(normalized / max(white_reference, 1e-6) * 255.0, 0, 255)
-    return normalized.astype(np.uint8)
+    return normalized.astype(np.uint8), shaded_area_mask
 
 
 # ---------------------------------------------------------------------------
@@ -500,8 +556,16 @@ def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -
     preprocess_config = config["preprocess"]
     debug_images: dict[str, np.ndarray] = {}
 
-    # 처리용으로 크기를 줄인다(속도 때문에). 원본 비율은 유지한다.
-    working_image = resize_to_max_side(original_color_image, preprocess_config["work_max_side_px"])
+    # 처리용 크기로 맞춘다. 큰 사진은 줄이고(속도), **작은 사진은 키운다.**
+    # 키우는 이유: 이 엔진의 픽셀 단위 기준값들(글자 최소 넓이, 선 최소 길이, 아이콘 최소 변…)은
+    # 긴 변 1500px 안팎의 사진에 맞춰져 있다. 335x597 짜리 사진을 그대로 넣으면 글자 높이가
+    # 5px 이라 거의 모든 기준에 걸려 색펜 제거 34%, 컬러 인쇄 손실 52% 로 무너졌다(실측).
+    # 키운다고 정보가 늘지는 않지만, 기준값들이 다시 맞아 들어간다. 결과는 원래 크기로 되돌린다.
+    working_image, working_scale = resize_to_working_size(
+        original_color_image,
+        preprocess_config["work_max_side_px"],
+        preprocess_config["work_min_side_px"],
+    )
     debug_images["00_입력"] = working_image.copy()
 
     # a) 방향
@@ -510,7 +574,8 @@ def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -
         working_image, rotation_applied = detect_and_fix_orientation(working_image)
 
     # b-0) 어두운 여백 잘라내기 (화면 캡처·어두운 책상 대응)
-    working_image, was_cropped = crop_to_bright_page(working_image)
+    working_image, crop_box = crop_to_bright_page(working_image)
+    was_cropped = crop_box is not None
     if was_cropped:
         debug_images["01a_여백자름"] = working_image.copy()
 
@@ -548,11 +613,19 @@ def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -
         debug_images["02_휨보정"] = working_image.copy()
 
     # e) 조명
-    normalized_gray = normalize_illumination(working_image, preprocess_config["illumination"])
+    normalized_gray, shaded_area_mask = normalize_illumination(
+        working_image, preprocess_config["illumination"])
     debug_images["03_조명정규화"] = normalized_gray.copy()
+    if shaded_area_mask.any():
+        debug_images["03a_회색채움면"] = shaded_area_mask * 255
 
     # f) 품질
     quality_warnings = check_photo_quality(working_image, paper_area_ratio, preprocess_config["quality"])
+    if working_scale > 1.0:
+        quality_warnings.append(
+            f"사진 해상도가 낮아요(긴 변 {max(original_color_image.shape[:2])}px). "
+            "원본 크기로 올리면 훨씬 정확해져요."
+        )
 
     return PreprocessResult(
         corrected_color_image=working_image,
@@ -562,7 +635,30 @@ def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -
         paper_area_ratio=paper_area_ratio,
         quality_warnings=quality_warnings,
         debug_images=debug_images,
+        working_scale=working_scale,
+        crop_box=crop_box,
+        shaded_area_mask=shaded_area_mask,
     )
+
+
+def resize_to_working_size(image: np.ndarray, max_side_pixels: int,
+                           min_side_pixels: int) -> tuple[np.ndarray, float]:
+    """긴 변이 [min_side_pixels, max_side_pixels] 안에 들어오게 비율을 유지하며 키우거나 줄인다.
+
+    돌려주는 값: (조정된 이미지, 배율). 배율 1.0 이면 손대지 않은 것이다.
+    """
+    image_height, image_width = image.shape[:2]
+    longest_side = max(image_height, image_width)
+    if longest_side > max_side_pixels:
+        scale = max_side_pixels / longest_side
+        interpolation = cv2.INTER_AREA
+    elif longest_side < min_side_pixels:
+        scale = min_side_pixels / longest_side
+        interpolation = cv2.INTER_CUBIC
+    else:
+        return image, 1.0
+    new_size = (int(round(image_width * scale)), int(round(image_height * scale)))
+    return cv2.resize(image, new_size, interpolation=interpolation), scale
 
 
 def resize_to_max_side(image: np.ndarray, max_side_pixels: int) -> np.ndarray:

@@ -139,7 +139,7 @@ def make_clean_exam_page(width: int = 1000, height: int = 1400, seed: int = 0,
 
 def make_clean_exam_page_with_masks(
     width: int = 1000, height: int = 1400, seed: int = 0, two_column: bool | None = None,
-    with_color_printing: bool = True,
+    with_color_printing: bool = True, with_shaded_figure: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """깨끗한 시험지와 마스크들을 만든다.
 
@@ -253,6 +253,15 @@ def make_clean_exam_page_with_masks(
             draw_line_both([(x_position, table_top),
                             (x_position, table_top + row_count * cell_height)], figure_ink, 2)
 
+    # ── 음영(회색으로 채운) 도형 ────────────────────────────────────────
+    if with_shaded_figure:
+        draw_shaded_figure(
+            page_drawing, figure_mask_drawing,
+            left=random_generator.randint(left_margin, max(left_margin + 1, main_column_right - 280)),
+            top=min(current_y + 20, height - 260),
+            random_generator=random_generator,
+        )
+
     # ── 오른쪽 단 (2단 편집일 때만) ───────────────────────────────────────
     if two_column:
         divider_x = width - 220
@@ -356,6 +365,45 @@ def draw_color_printing(color_page: np.ndarray, color_print_mask: np.ndarray,
     color_print_mask[:] = (np.array(number_mask_image) > 100).astype(np.uint8)
 
     return color_page, color_print_mask
+
+
+def draw_shaded_figure(page_drawing: ImageDraw.ImageDraw, figure_mask_drawing: ImageDraw.ImageDraw,
+                       left: int, top: int, random_generator: random.Random) -> None:
+    """회색으로 **면을 채운** 인쇄 도형을 그린다(빗금 친 부분, 색칠된 표 칸 등).
+
+    왜 필요한가: 실제 시험지에는 "색칠한 부분의 넓이를 구하시오" 같은 문제가 흔해서
+    반원·부채꼴·표 칸이 회색으로 채워져 나온다. 지금까지 합성 시험지에는 선만 있었고,
+    실제 사진(적분 반원 문제)에서 이 회색 면이 커다란 회색 덩어리로 뭉개지는 것을 봤다.
+    선(가늘고 진함)과 면(넓고 중간 회색)은 성질이 전혀 달라서 따로 시험해야 한다.
+    """
+    shading_gray = random_generator.randint(150, 195)   # 인쇄 망점이라 중간 회색이다
+    outline_gray = random_generator.randint(20, 45)
+    figure_kind = random_generator.choice(["반원", "부채꼴", "표칸", "막대"])
+
+    if figure_kind in ("반원", "부채꼴"):
+        width = random_generator.randint(150, 230)
+        height = width // 2 if figure_kind == "반원" else width
+        box = [left, top, left + width, top + height * 2]
+        start_angle, end_angle = (180, 360) if figure_kind == "반원" else (200, 340)
+        page_drawing.pieslice(box, start_angle, end_angle, fill=shading_gray, outline=outline_gray, width=2)
+        figure_mask_drawing.pieslice(box, start_angle, end_angle, fill=255, outline=255, width=2)
+    elif figure_kind == "표칸":
+        cell_width, cell_height = 58, 40
+        for row_position in range(3):
+            for column_position in range(3):
+                cell_left = left + column_position * cell_width
+                cell_top = top + row_position * cell_height
+                box = [cell_left, cell_top, cell_left + cell_width, cell_top + cell_height]
+                # 일부 칸만 회색으로 채운다
+                fill_gray = shading_gray if (row_position + column_position) % 3 == 0 else None
+                page_drawing.rectangle(box, fill=fill_gray, outline=outline_gray, width=2)
+                figure_mask_drawing.rectangle(box, fill=255, outline=255, width=2)
+    else:   # 막대 (색 테이프 문제처럼 길게 채운 직사각형)
+        bar_width = random_generator.randint(180, 260)
+        bar_height = random_generator.randint(26, 40)
+        box = [left, top, left + bar_width, top + bar_height]
+        page_drawing.rectangle(box, fill=shading_gray, outline=outline_gray, width=2)
+        figure_mask_drawing.rectangle(box, fill=255, outline=255, width=2)
 
 
 def add_bleed_through(page_array: np.ndarray, seed: int) -> np.ndarray:
@@ -636,12 +684,28 @@ def simulate_camera(color_page: np.ndarray, seed: int = 0,
 # ---------------------------------------------------------------------------
 # 4) 한 번에 만들기
 # ---------------------------------------------------------------------------
+# 실제 시험지 사진에서 겪은 실패 유형을 재현하는 시나리오들.
+SCENARIOS = ["기본", "음영도형", "저해상도", "흑백저장", "화면캡처"]
+
+
 def make_synthetic_page(seed: int = 0, difficulty: str = "보통",
                         rotation_degrees: float | None = None,
-                        with_bleed_through: bool = True) -> SyntheticPage:
-    """합성 시험지 한 장을 정답 마스크까지 갖춰 만든다."""
+                        with_bleed_through: bool = True,
+                        scenario: str = "기본") -> SyntheticPage:
+    """합성 시험지 한 장을 정답 마스크까지 갖춰 만든다.
+
+    scenario — 실제 사진 4장이 드러낸 실패 유형을 재현한다:
+      "기본"     : 지금까지의 합성 시험지
+      "음영도형" : 회색으로 면을 채운 도형이 있다 (적분 반원 문제 사진)
+      "저해상도" : 긴 변 560px 로 줄인다. 글자 높이가 5~7px 밖에 안 된다 (335x597 사진들)
+      "흑백저장" : 색이 날아간 흑백 이미지. 빨간펜도 회색이다 (초등 문제집 사진)
+      "화면캡처" : 검은 여백과 장식 배너가 둘러싼 화면 캡처 (고3 모의고사 사진)
+    """
+    if scenario not in SCENARIOS:
+        raise ValueError(f"모르는 시나리오: {scenario}. 가능한 값: {SCENARIOS}")
     (color_clean_page, gray_clean_page, printed_text_mask,
-     figure_mask, color_print_mask) = make_clean_exam_page_with_masks(seed=seed)
+     figure_mask, color_print_mask) = make_clean_exam_page_with_masks(
+        seed=seed, with_shaded_figure=(scenario == "음영도형"))
     if with_bleed_through:
         gray_with_bleed = add_bleed_through(gray_clean_page, seed)
         bleed_amount = gray_clean_page.astype(np.int16) - gray_with_bleed.astype(np.int16)
@@ -651,20 +715,71 @@ def make_synthetic_page(seed: int = 0, difficulty: str = "보통",
         page_for_writing = color_clean_page
     written_page, handwriting_mask, student_graph_mask = add_student_handwriting(
         page_for_writing, seed=seed, difficulty=difficulty, return_graph_boxes=True)
+    masks = {
+        "handwriting": handwriting_mask, "printed_text": printed_text_mask,
+        "figure": figure_mask, "color_print": color_print_mask, "student_graph": student_graph_mask,
+    }
+
+    # ── 시나리오별 후처리 (이미지와 마스크를 똑같이 변형해야 정답이 맞는다) ──
+    if scenario == "저해상도":
+        scale = 560.0 / max(written_page.shape[:2])
+        new_size = (int(written_page.shape[1] * scale), int(written_page.shape[0] * scale))
+        written_page = cv2.resize(written_page, new_size, interpolation=cv2.INTER_AREA)
+        gray_clean_page = cv2.resize(gray_clean_page, new_size, interpolation=cv2.INTER_AREA)
+        masks = {name: cv2.resize(mask, new_size, interpolation=cv2.INTER_NEAREST)
+                 for name, mask in masks.items()}
+    elif scenario == "흑백저장":
+        gray = cv2.cvtColor(written_page, cv2.COLOR_BGR2GRAY)
+        written_page = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    elif scenario == "화면캡처":
+        written_page, gray_clean_page, masks = wrap_as_screen_capture(
+            written_page, gray_clean_page, masks, seed)
+
     photo, applied_rotation = simulate_camera(written_page, seed=seed,
                                               rotation_degrees=rotation_degrees)
     return SyntheticPage(
         photo_image=photo,
         clean_page_image=gray_clean_page,
         written_page_image=written_page,
-        handwriting_mask=handwriting_mask,
-        printed_text_mask=printed_text_mask,
-        figure_mask=figure_mask,
-        color_print_mask=color_print_mask,
-        student_graph_mask=student_graph_mask,
+        handwriting_mask=masks["handwriting"],
+        printed_text_mask=masks["printed_text"],
+        figure_mask=masks["figure"],
+        color_print_mask=masks["color_print"],
+        student_graph_mask=masks["student_graph"],
         applied_rotation_degrees=applied_rotation,
-        notes={"difficulty": difficulty},
+        notes={"difficulty": difficulty, "scenario": scenario},
     )
+
+
+def wrap_as_screen_capture(written_page: np.ndarray, gray_clean_page: np.ndarray,
+                           masks: dict, seed: int):
+    """페이지를 검은 여백과 장식 배너로 둘러싼 "화면 캡처"로 만든다.
+
+    실제 고3 모의고사 캡처 사진이 이랬다: 위아래로 새까만 띠, 맨 위에 흰 글씨 제목 배너.
+    검은 여백이 화면의 13% 를 차지해서 "아주 큰 잉크 덩어리"로 잡혔고 본문이 통째로 지워졌다.
+    """
+    random_generator = random.Random(seed + 77)
+    page_height, page_width = written_page.shape[:2]
+    top_band = random_generator.randint(int(page_height * 0.06), int(page_height * 0.12))
+    bottom_band = random_generator.randint(int(page_height * 0.04), int(page_height * 0.10))
+    side_band = random_generator.randint(0, int(page_width * 0.04))
+
+    def pad(image, value):
+        return cv2.copyMakeBorder(image, top_band, bottom_band, side_band, side_band,
+                                  cv2.BORDER_CONSTANT, value=value)
+
+    wrapped = pad(written_page, (8, 8, 8))
+    wrapped_clean = pad(gray_clean_page, 8)
+    wrapped_masks = {name: pad(mask, 0) for name, mask in masks.items()}
+
+    # 배너: 검은 띠 위에 흰(또는 노란) 큰 제목
+    banner_font = load_font(max(18, top_band - 14), bold=True)
+    banner_image = Image.fromarray(cv2.cvtColor(wrapped, cv2.COLOR_BGR2RGB))
+    banner_color = random_generator.choice([(255, 255, 255), (255, 230, 60)])
+    ImageDraw.Draw(banner_image).text((side_band + 20, 6), "2026 3월 고3 공통",
+                                      font=banner_font, fill=banner_color)
+    wrapped = cv2.cvtColor(np.array(banner_image), cv2.COLOR_RGB2BGR)
+    return wrapped, wrapped_clean, wrapped_masks
 
 
 def make_photo_pair(seed: int = 0, rotation_degrees: float | None = None):

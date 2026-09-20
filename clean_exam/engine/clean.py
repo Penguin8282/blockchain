@@ -111,14 +111,20 @@ def clean_image(
         debug_images["06_지울곳"] = handwriting_mask * 255
         debug_images["07_그래프"] = strengthened_figure_mask * 255
 
-    # "지키되 강조는 안 하는" 가는 인쇄선(분수 가로줄·표 선)의 자리를 모아 둔다.
+    # "지키되 강조는 안 하는" 인쇄 부분(가는 선·회색으로 채운 면)의 자리를 모아 둔다.
     thin_line_mask = np.zeros(working_gray.shape[:2], dtype=np.uint8)
     for component in components:
-        if not component.is_protected_thin_line:
+        if not (component.is_protected_thin_line or component.is_shaded_area):
             continue
         left, top, width, height = component.bounding_box
         box_slice = (slice(top, top + height), slice(left, left + width))
         thin_line_mask[box_slice][labeled_image[box_slice] == component.component_index] = 1
+
+    # 조명 정규화 단계가 찾은 회색 채움 면(색칠된 반원·표 칸)도 "지키되 강조 안 함"에 넣는다
+    if preprocess_result.shaded_area_mask is not None:
+        thin_line_mask[preprocess_result.shaded_area_mask > 0] = 1
+        # 채움 면 위를 지나는 획 하나 때문에 면 전체가 새까맣게 칠해지지 않게 한다
+        strengthened_figure_mask[preprocess_result.shaded_area_mask > 0] = 0
 
     # 6) 최종 마무리
     erased_image = finalize.erase_handwriting(
@@ -129,6 +135,13 @@ def clean_image(
         color_print_mask=color_print_mask, corrected_color_image=working_color,
         thin_line_mask=thin_line_mask,
     )
+    # 처리를 위해 키웠던 사진은 원래 크기로 되돌린다(원본과 같은 해상도가 약속이다).
+    working_scale = preprocess_result.working_scale
+    if working_scale > 1.0:
+        restored_size = (int(round(cleaned_image.shape[1] / working_scale)),
+                         int(round(cleaned_image.shape[0] / working_scale)))
+        cleaned_image = cv2.resize(cleaned_image, restored_size, interpolation=cv2.INTER_AREA)
+        working_color = cv2.resize(working_color, restored_size, interpolation=cv2.INTER_AREA)
     compare_image = finalize.make_comparison_image(working_color, cleaned_image)
 
     elapsed_seconds = time.time() - overall_started_at
@@ -137,6 +150,10 @@ def clean_image(
         "compare_image": compare_image,
         "quality_warnings": preprocess_result.quality_warnings,
         "rectify_method": preprocess_result.rectify_method,
+        "working_scale": working_scale,
+        # 어두운 여백을 잘라냈다면 그 사각형(원본 좌표 기준). 결과를 원본 위에 겹칠 때 쓴다.
+        "crop_box": tuple(int(round(value / working_scale)) for value in preprocess_result.crop_box)
+        if preprocess_result.crop_box else None,
         "rule_label_counts": rule_label_counts,
         "label_counts": dict(Counter(component.label for component in components)),
         "color_pen_pixel_ratio": float(color_pen_mask.mean()),
