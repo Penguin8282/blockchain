@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>깔끔 시험지</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>깔끔 시험지</h1>
+  <select id="teacherSelect" title="강사 선택"><option value="">강사 선택</option></select>
+  <div class="spacer"></div>
+  <span class="badge" id="usageBadge">오늘 API 사용: 0회 / 약 ₩0</span>
+  <button id="openSettings">⚙ 설정</button>
+</header>
+
+<div class="layout">
+  <!-- 왼쪽: 올리기 -->
+  <section class="card">
+    <h2>사진 올리기</h2>
+    <div class="dropzone" id="dropzone">여기에 사진을 끌어다 놓거나<br>클릭해서 고르세요<br><small>여러 장 가능 · JPG · PNG · HEIC</small></div>
+    <input type="file" id="fileInput" accept="image/*,.heic" multiple class="hidden">
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
+    <div class="row">
+      <button id="cameraBtn">📷 카메라로 찍기</button>
+    </div>
+    <div class="row">
+      <label for="examName">시험지 이름</label>
+      <input type="text" id="examName" list="examList" placeholder="예: 중2-1 중간 3회" style="flex:1">
+      <datalist id="examList"></datalist>
+    </div>
+    <div class="toggle"><input type="checkbox" id="useJudge" checked> <label for="useJudge">클로드 판정관 사용</label> <span class="lock hidden" id="judgeLock">🔒 키를 넣으면 쓸 수 있어요</span></div>
+    <div class="thumbs" id="thumbs"></div>
+  </section>
+
+  <!-- 가운데: 비교 -->
+  <section class="card viewer">
+    <div id="placeholder" class="placeholder">사진을 올리면 원본과 결과를 나란히 비교할 수 있어요.</div>
+    <div class="compare hidden" id="compare">
+      <img id="originalImg" alt="원본">
+      <img id="resultImg" class="result" alt="결과">
+      <div class="divider" id="divider"></div>
+      <div id="issues"></div>
+      <input type="range" id="compareRange" min="0" max="100" value="50">
+    </div>
+    <div class="messages" id="messages"></div>
+    <div class="actions">
+      <button id="reviewBtn" disabled>🔍 클로드 검수</button>
+      <button id="cornersBtn" disabled>모서리 수동 조정</button>
+      <div class="spacer"></div>
+      <button id="downloadPng" disabled>PNG 내려받기</button>
+      <button id="downloadPdf" disabled>PDF로 내려받기</button>
+    </div>
+  </section>
+
+  <!-- 오른쪽: 조절 -->
+  <section class="card">
+    <h2>조절</h2>
+    <div class="slider"><label>필기 제거 강도 <span id="v_remove_strength">50</span></label><input type="range" min="0" max="100" data-slider="remove_strength"></div>
+    <div class="slider"><label>색 필기 제거 민감도 <span id="v_color_sensitivity">50</span></label><input type="range" min="0" max="100" data-slider="color_sensitivity"></div>
+    <div class="slider"><label>그래프 굵기 <span id="v_graph_thickness">33</span></label><input type="range" min="0" max="100" data-slider="graph_thickness"></div>
+    <div class="slider"><label>글자 진하기 <span id="v_text_darkness">50</span></label><input type="range" min="0" max="100" data-slider="text_darkness"></div>
+    <div class="msg" id="previewNote" style="font-size:12px">슬라이더를 움직이면 1초 안에 미리보기가 바뀌어요. (API 는 다시 부르지 않아요)</div>
+    <div class="actions">
+      <button id="applyBtn" class="primary" disabled>원래 크기로 적용</button>
+      <button id="saveDefaults">이 설정을 기본값으로 저장</button>
+    </div>
+  </section>
+</div>
+
+<section class="jobs">
+  <div class="row"><h2 style="margin:0;font-size:15px">최근 작업</h2>
+    <label class="toggle"><input type="checkbox" id="showAll"> 다른 강사 작업 보기</label></div>
+  <div class="list" id="jobList"></div>
+</section>
+
+<!-- 첫 접속 안내 -->
+<div class="modal-bg hidden" id="welcomeModal"><div class="modal">
+  <h2>처음 오셨네요</h2>
+  <p>사진을 올리면 필기를 지워 드려요. Anthropic(클로드) 키를 넣으면 더 정확해지고 검수도 받을 수 있어요(비용은 본인 계정에 청구).<br>올린 사진은 학원 서버에 보관되어 모델 개선에 쓰입니다.</p>
+  <div class="field"><label>내 이름</label><select id="welcomeTeacher"></select></div>
+  <div class="actions"><button class="primary" id="welcomeOk">시작하기</button></div>
+</div></div>
+
+<!-- 설정 -->
+<div class="modal-bg hidden" id="settingsModal"><div class="modal">
+  <h2>⚙ 설정</h2>
+  <div class="field"><label>Anthropic API 키</label>
+    <div class="keyrow"><input type="password" id="keyInput" placeholder="sk-ant-…" autocomplete="off"><button id="keyEye" title="보기">👁</button><button id="keyCheck">키 확인</button></div>
+    <p style="margin:6px 0 0;font-size:12px">이 브라우저에만 저장됩니다. 서버에는 저장되지 않아요.</p>
+    <div class="msg" id="keyStatus" style="margin-top:6px"></div>
+    <div class="actions"><button id="keyClear">키 지우기</button></div>
+  </div>
+  <div class="field"><label>모델</label>
+    <label><input type="radio" name="model" value="fast" checked> 가성비 (Haiku 계열 · 기본)</label><br>
+    <label><input type="radio" name="model" value="quality"> 고품질 (Opus 계열 · 비용↑)</label>
+  </div>
+  <details><summary>Anthropic 키 만드는 법</summary><ol>
+    <li>console.anthropic.com 에 로그인 → <b>API Keys</b> → <b>Create Key</b> → 만들어진 <code>sk-ant-…</code> 를 복사 (다시 볼 수 없으니 바로 붙여넣기)</li>
+    <li><b>Billing</b> 에서 결제 수단 등록 + 선불 크레딧 충전(소액이면 충분). 지출 한도(spend limit)를 걸어 두면 안심</li>
+    <li>여기에 붙여넣고 <b>키 확인</b></li>
+    <li>비용 감각: 시험지 한 장 정리에 판정관 몇 호출(가성비 모델 기준 몇십 원 안팎). 화면 오른쪽 위에서 오늘 쓴 금액을 볼 수 있어요</li>
+  </ol></details>
+  <div class="actions"><button class="primary" id="closeSettings">닫기</button></div>
+</div></div>
+
+<!-- 카메라 팁 -->
+<div class="modal-bg hidden" id="cameraModal"><div class="modal">
+  <h2>찍기 전에</h2>
+  <div class="guide"><div class="frame"></div>시험지 네 모서리를 이 틀 안에 맞추세요</div>
+  <p>그림자 없이, 시험지가 화면을 꽉 채우게. 흔들리지 않게 잠깐 멈춘 뒤 찍으세요.</p>
+  <div class="actions"><button id="cameraCancel">취소</button><button class="primary" id="cameraGo">카메라 열기</button></div>
+</div></div>
+
+<!-- 모서리 수동 조정 -->
+<div class="modal-bg hidden" id="cornerModal"><div class="modal" style="width:min(760px,96vw)">
+  <h2>모서리 수동 조정</h2>
+  <p>네 모서리의 점을 끌어 시험지 귀퉁이에 맞춘 뒤 <b>적용</b>을 누르세요.</p>
+  <canvas id="cornerCanvas"></canvas>
+  <div class="actions"><button id="cornerCancel">취소</button><button class="primary" id="cornerApply">적용해서 다시 처리</button></div>
+</div></div>
+
+<script src="/static/settings.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

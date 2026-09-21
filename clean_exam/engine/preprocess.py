@@ -551,8 +551,13 @@ def check_photo_quality(color_image: np.ndarray, paper_area_ratio: float,
 # ---------------------------------------------------------------------------
 # 전체를 순서대로 실행
 # ---------------------------------------------------------------------------
-def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -> PreprocessResult:
-    """사진 보정 전체를 순서대로 실행하고 결과를 PreprocessResult 로 돌려준다."""
+def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any],
+                     manual_corners: list[list[float]] | None = None) -> PreprocessResult:
+    """사진 보정 전체를 순서대로 실행하고 결과를 PreprocessResult 로 돌려준다.
+
+    manual_corners: 강사가 화면에서 직접 잡은 시험지 네 모서리 [[x, y], ...] 4개.
+        원본 사진 기준 0~1 비율 좌표. 주어지면 자동 검출(방향·여백·윤곽)을 건너뛰고 이 모서리로 편다.
+    """
     preprocess_config = config["preprocess"]
     debug_images: dict[str, np.ndarray] = {}
 
@@ -568,21 +573,34 @@ def preprocess_photo(original_color_image: np.ndarray, config: dict[str, Any]) -
     )
     debug_images["00_입력"] = working_image.copy()
 
-    # a) 방향
     rotation_applied = 0.0
-    if preprocess_config["auto_orient"]:
-        working_image, rotation_applied = detect_and_fix_orientation(working_image)
-
-    # b-0) 어두운 여백 잘라내기 (화면 캡처·어두운 책상 대응)
-    working_image, crop_box = crop_to_bright_page(working_image)
-    was_cropped = crop_box is not None
-    if was_cropped:
-        debug_images["01a_여백자름"] = working_image.copy()
-
-    # b)+c) 시험지 영역 → 원근 보정
-    rectify_method = "cropped" if was_cropped else "none"
+    crop_box: tuple[int, int, int, int] | None = None
+    was_cropped = False
     paper_area_ratio = 1.0
-    quadrilateral = find_paper_quadrilateral(working_image, preprocess_config)
+
+    if manual_corners is not None and len(manual_corners) == 4:
+        # 강사가 직접 잡은 모서리: 자동 검출을 전부 건너뛰고 그대로 편다
+        image_height, image_width = working_image.shape[:2]
+        corner_points = np.array(
+            [[x * image_width, y * image_height] for x, y in manual_corners], dtype=np.float32)
+        paper_area_ratio = float(cv2.contourArea(corner_points.astype(np.int32)) / (image_width * image_height))
+        working_image = warp_to_rectangle(working_image, corner_points)
+        rectify_method = "manual"
+        quadrilateral = None
+    else:
+        # a) 방향
+        if preprocess_config["auto_orient"]:
+            working_image, rotation_applied = detect_and_fix_orientation(working_image)
+
+        # b-0) 어두운 여백 잘라내기 (화면 캡처·어두운 책상 대응)
+        working_image, crop_box = crop_to_bright_page(working_image)
+        was_cropped = crop_box is not None
+        if was_cropped:
+            debug_images["01a_여백자름"] = working_image.copy()
+
+        # b)+c) 시험지 영역 → 원근 보정
+        rectify_method = "cropped" if was_cropped else "none"
+        quadrilateral = find_paper_quadrilateral(working_image, preprocess_config)
     if quadrilateral is not None:
         image_area = float(working_image.shape[0] * working_image.shape[1])
         paper_area_ratio = float(cv2.contourArea(quadrilateral.astype(np.int32)) / image_area)

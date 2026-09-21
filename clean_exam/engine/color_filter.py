@@ -67,7 +67,9 @@ def determine_saturation_threshold(corrected_color_image: np.ndarray,
     방법: 잉크(어두운) 픽셀의 채도만 모아 Otsu 로 두 무리(무채색 잉크 / 색 잉크)로 가른다.
     두 무리의 평균 차이가 충분하지 않으면(= 색펜이 없는 흑백 시험지면) 설정값을 그대로 쓴다.
     """
-    fallback_threshold = int(color_config["saturation_threshold"])
+    sensitivity = float(color_config.get("saturation_sensitivity", 1.0)) or 1.0
+    fallback_threshold = max(int(round(color_config["saturation_threshold"] / sensitivity)),
+                             int(color_config["saturation_threshold_floor"]))
     gray_image = cv2.cvtColor(corrected_color_image, cv2.COLOR_BGR2GRAY)
     saturation_channel = cv2.cvtColor(corrected_color_image, cv2.COLOR_BGR2HSV)[:, :, 1]
 
@@ -101,7 +103,8 @@ def determine_saturation_threshold(corrected_color_image: np.ndarray,
         #   이 두 조건이 없으면 종이 얼룩을 색펜으로 오인한다(실제로 겪었다).
         return fallback_threshold
 
-    return max(int(otsu_threshold), int(color_config["saturation_threshold_floor"]))
+    sensitivity = float(color_config.get("saturation_sensitivity", 1.0)) or 1.0
+    return max(int(round(otsu_threshold / sensitivity)), int(color_config["saturation_threshold_floor"]))
 
 
 def build_colored_pixel_mask(corrected_color_image: np.ndarray,

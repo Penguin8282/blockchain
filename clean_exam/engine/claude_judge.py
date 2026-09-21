@@ -160,7 +160,7 @@ def judge_unsure_components(
 
     if not unsure_components:
         return {"api_skipped": False, "judged_count": 0, "error_kind": None,
-                "message": None, "call_count": 0}
+                "message": None, "call_count": 0, "judgements": []}
 
     if not api_key:
         # 키가 없으면 애매한 것은 전부 "인쇄"로 둔다 — 안 지우는 쪽이 안전하다.
@@ -172,6 +172,7 @@ def judge_unsure_components(
             "error_kind": "no_key",
             "message": "Anthropic 키를 넣으면 더 정확하게 지울 수 있어요. (지금은 애매한 획을 남겨 두었어요.)",
             "call_count": 0,
+            "judgements": [],
         }
 
     crop_groups = group_unsure_components(
@@ -202,6 +203,7 @@ def judge_unsure_components(
     call_count = 0
     first_error_kind: str | None = None
     first_error_message: str | None = None
+    judgements: list[dict[str, Any]] = []   # 판정관이 정한 것들. 미리보기에서 재사용한다
 
     for batch_start in range(0, len(crop_groups), crops_per_call):
         if call_count >= maximum_calls:
@@ -259,6 +261,11 @@ def judge_unsure_components(
             else:
                 component.label = reported_label
             judged_count += 1
+            judgements.append({
+                "component_index": component.component_index,
+                "label": component.label,
+                "confidence": reported_confidence,
+            })
 
     # 판정받지 못하고 남은 애매한 요소는 전부 "인쇄"로 둔다(안전 쪽)
     for component in components:
@@ -271,4 +278,5 @@ def judge_unsure_components(
         "error_kind": first_error_kind,
         "message": first_error_message,
         "call_count": call_count,
+        "judgements": judgements,
     }

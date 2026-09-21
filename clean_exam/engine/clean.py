@@ -23,7 +23,7 @@ import numpy as np
 from engine import color_filter, finalize, graph_enhance, preprocess, stroke_filter
 from engine.settings import PROJECT_ROOT, load_config
 from engine.stroke_filter import LABEL_FIGURE, LABEL_HANDWRITING, LABEL_PRINTED
-from services.claude_client import CallStatistics
+from services.claude_client import CallStatistics, append_usage_log
 
 
 def clean_image(
@@ -33,6 +33,9 @@ def clean_image(
     use_judge: bool = True,
     model: str | None = None,
     debug: bool = False,
+    label_overrides: list[dict[str, Any]] | None = None,
+    manual_corners: list[list[float]] | None = None,
+    usage_log_path: Path | None = None,
 ) -> dict[str, Any]:
     """사진 한 장에서 필기를 지우고 인쇄 글자·그래프를 진하게 만든다.
 
@@ -43,6 +46,12 @@ def clean_image(
         use_judge: 강사가 화면에서 "판정관 사용"을 껐을 때 False
         model: 쓸 모델 ID. None 이면 config 의 fast_model.
         debug: True 면 중간 이미지를 결과에 담는다
+        label_overrides: 판정을 강제할 영역들. [{"box": [x, y, w, h] (보정된 이미지 기준 0~1 비율),
+            "label": "handwriting"|"printed_text"|"figure", "source": "judge"|"teacher"}, ...]
+            · 판정관이 이미 정한 결과를 미리보기에서 **API 없이 재사용**할 때 (source=judge)
+            · 강사가 화면에서 "이건 필기니까 지워 / 문제니까 살려" 로 고칠 때 (source=teacher)
+            영역 안에 중심이 있는 획에 적용된다. teacher 는 어떤 규칙도 뒤집지 못하는 최종 결정이다.
+        manual_corners: 강사가 직접 잡은 시험지 네 모서리 (원본 기준 0~1 비율). 자동 보정을 대신한다.
 
     돌려주는 값(dict):
         cleaned_image, compare_image, quality_warnings, rectify_method,
@@ -54,7 +63,8 @@ def clean_image(
     statistics = CallStatistics()
 
     # 1) 사진 보정
-    preprocess_result = preprocess.preprocess_photo(original_color_image, config)
+    preprocess_result = preprocess.preprocess_photo(original_color_image, config,
+                                                    manual_corners=manual_corners)
     working_gray = preprocess_result.normalized_gray_image
     working_color = preprocess_result.corrected_color_image
 
@@ -74,6 +84,11 @@ def clean_image(
     _force_color_print_labels(labeled_image, components, color_print_mask)
     rule_label_counts = dict(Counter(component.label for component in components))
 
+    # 판정관 결과 재사용(source=judge) — 애매한 것만 채운다. 규칙이 확신한 것은 그대로.
+    image_height, image_width = working_gray.shape[:2]
+    _apply_label_overrides(components, label_overrides or [], image_width, image_height,
+                           only_source="judge")
+
     debug_images = dict(preprocess_result.debug_images) if debug else {}
     if debug:
         debug_images["04_규칙분류"] = stroke_filter.render_classification_debug_image(
@@ -92,6 +107,10 @@ def clean_image(
         judge_result = {"api_skipped": True, "judged_count": 0, "error_kind": "disabled",
                         "message": "판정관을 끈 상태로 처리했어요.", "call_count": 0}
 
+    # 강사가 직접 정한 것(source=teacher) — 모든 규칙과 판정관보다 우선한다
+    _apply_label_overrides(components, label_overrides or [], image_width, image_height,
+                           only_source="teacher")
+
     # 5) 그래프·도형 보호 및 강화
     components = graph_enhance.mark_figure_components(
         labeled_image, components, ink_mask, config["graph_enhance"]
@@ -103,6 +122,14 @@ def clean_image(
     # 그래프로 보호한 자리는 절대 지우지 않는다(겹치면 보호가 이긴다)
     handwriting_mask = label_masks[LABEL_HANDWRITING].copy()
     handwriting_mask[strengthened_figure_mask > 0] = 0
+    # 강사가 "지워"라고 한 획은 어떤 보호도 무시하고 지운다
+    for component in components:
+        if component.is_manual_override and component.label == LABEL_HANDWRITING:
+            left, top, width, height = component.bounding_box
+            box_slice = (slice(top, top + height), slice(left, left + width))
+            pixels = labeled_image[box_slice] == component.component_index
+            handwriting_mask[box_slice][pixels] = 1
+            strengthened_figure_mask[box_slice][pixels] = 0
 
     if debug:
         debug_images["05_최종분류"] = stroke_filter.render_classification_debug_image(
@@ -144,6 +171,23 @@ def clean_image(
         working_color = cv2.resize(working_color, restored_size, interpolation=cv2.INTER_AREA)
     compare_image = finalize.make_comparison_image(working_color, cleaned_image)
 
+    # 판정관이 정한 것을 보정된 이미지 기준 0~1 비율 사각형으로 돌려준다 (미리보기 재사용용)
+    component_by_index = {component.component_index: component for component in components}
+    judge_overrides: list[dict[str, Any]] = []
+    for judgement in judge_result.get("judgements", []):
+        component = component_by_index.get(judgement["component_index"])
+        if component is None:
+            continue
+        left, top, width, height = component.bounding_box
+        judge_overrides.append({
+            "box": [left / image_width, top / image_height, width / image_width, height / image_height],
+            "label": judgement["label"],
+            "source": "judge",
+        })
+
+    if usage_log_path is not None:
+        append_usage_log(usage_log_path, statistics, float(config["claude"]["usd_to_krw"]))
+
     elapsed_seconds = time.time() - overall_started_at
     return {
         "cleaned_image": cleaned_image,
@@ -151,6 +195,7 @@ def clean_image(
         "quality_warnings": preprocess_result.quality_warnings,
         "rectify_method": preprocess_result.rectify_method,
         "working_scale": working_scale,
+        "judge_overrides": judge_overrides,
         # 어두운 여백을 잘라냈다면 그 사각형(원본 좌표 기준). 결과를 원본 위에 겹칠 때 쓴다.
         "crop_box": tuple(int(round(value / working_scale)) for value in preprocess_result.crop_box)
         if preprocess_result.crop_box else None,
@@ -168,6 +213,36 @@ def clean_image(
         "elapsed_seconds_without_api": round(elapsed_seconds - api_seconds, 2),
         "debug_images": debug_images,
     }
+
+
+def _apply_label_overrides(components: list[stroke_filter.StrokeComponent],
+                           overrides: list[dict[str, Any]], image_width: int, image_height: int,
+                           only_source: str) -> None:
+    """영역 안에 중심이 있는 획의 판정을 강제한다(제자리 수정).
+
+    source 가 "judge" 면 애매한 획만 채운다(판정관은 애매한 것만 봤으니까).
+    source 가 "teacher" 면 무엇이든 덮어쓰고 수동 지정 표시를 남긴다.
+    """
+    selected = [override for override in overrides if override.get("source", "judge") == only_source]
+    if not selected:
+        return
+    for component in components:
+        left, top, width, height = component.bounding_box
+        center_x = (left + width / 2.0) / image_width
+        center_y = (top + height / 2.0) / image_height
+        for override in selected:
+            box_x, box_y, box_w, box_h = override["box"]
+            if not (box_x <= center_x <= box_x + box_w and box_y <= center_y <= box_y + box_h):
+                continue
+            if only_source == "judge" and component.label != stroke_filter.LABEL_UNSURE:
+                continue
+            component.label = override["label"]
+            if only_source == "teacher":
+                component.is_manual_override = True
+                component.is_protected_thin_line = False
+                component.is_shaded_area = False
+                component.is_ring_glued_blob = False
+            break
 
 
 def _force_color_print_labels(labeled_image: np.ndarray,

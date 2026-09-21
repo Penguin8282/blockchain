@@ -55,6 +55,7 @@ class StrokeComponent:
     is_protected_thin_line: bool = False       # 분수 가로줄·표 선처럼 '지키되 강조는 안 하는' 선
     is_shaded_area: bool = False               # 회색으로 면을 채운 인쇄 부분(색칠된 반원·표 칸). 지키되 강조 안 함
     is_ring_glued_blob: bool = False           # 큰 고리(동그라미)에 글자·도형이 붙어 버린 거대 덩어리. 통째로 지우지 않음
+    is_manual_override: bool = False           # 강사가 화면에서 직접 "지워/살려" 로 정한 것. 어떤 규칙도 뒤집지 못한다
 
 
 def binarize_ink(gray_image: np.ndarray, stroke_config: dict[str, Any]) -> np.ndarray:

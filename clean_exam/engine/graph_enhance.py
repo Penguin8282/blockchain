@@ -86,6 +86,8 @@ def mark_figure_components(labeled_image: np.ndarray, components: list[StrokeCom
     for component in components:
         if component.label == LABEL_FIGURE:
             continue
+        if component.is_manual_override:
+            continue   # 강사가 직접 정한 것은 규칙이 뒤집지 않는다
         # 회색으로 면을 채운 인쇄 부분은 도형으로 올리지 않는다.
         # 올리면 dilate + 완전 검정으로 칠해져 색칠된 반원이 새까만 덩어리가 된다.
         if component.is_shaded_area or component.is_ring_glued_blob:

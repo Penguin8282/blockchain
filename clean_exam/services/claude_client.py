@@ -278,3 +278,40 @@ def append_usage_log(usage_log_path: Path, statistics: CallStatistics, usd_to_kr
                 }, ensure_ascii=False) + "\n")
     except OSError as error:
         logger.warning("사용량 기록 실패(무시하고 계속): %s", mask_api_keys(error))
+
+
+def check_api_key(api_key: str, model: str, claude_config: dict[str, Any]) -> dict[str, Any]:
+    """강사가 넣은 키가 쓸 수 있는 키인지 **아주 싼 호출 1회**로 확인한다.
+
+    max_tokens=1 짜리 메시지를 보낸다(토큰 몇 개, 사실상 0원). 인증 오류·크레딧 부족·
+    권한 문제를 한국어로 구분해 돌려준다. 키는 이 함수 안에서만 쓰이고 저장하지 않는다.
+
+    돌려주는 값: {"ok": bool, "status": "valid"|"invalid"|"credit"|"network"|"error", "message": 한국어}
+    """
+    if not api_key or not api_key.startswith("sk-ant-"):
+        return {"ok": False, "status": "invalid", "message": "키는 sk-ant- 로 시작해야 해요. 다시 확인해 주세요."}
+    try:
+        import anthropic
+    except ImportError:
+        return {"ok": False, "status": "error", "message": "서버에 anthropic 패키지가 없어요. 관리자에게 알려 주세요."}
+
+    client = anthropic.Anthropic(api_key=api_key, timeout=20.0, max_retries=0)
+    try:
+        client.messages.create(model=model, max_tokens=1,
+                               messages=[{"role": "user", "content": "hi"}])
+    except anthropic.AuthenticationError:
+        return {"ok": False, "status": "invalid", "message": "키가 올바르지 않아요. 복사할 때 앞뒤가 잘리지 않았는지 확인해 주세요."}
+    except anthropic.PermissionDeniedError:
+        return {"ok": False, "status": "invalid", "message": "이 키로는 해당 모델을 쓸 수 없어요. 키 권한을 확인해 주세요."}
+    except anthropic.BadRequestError as error:
+        text = mask_api_keys(str(error)).lower()
+        if "credit" in text or "balance" in text:
+            return {"ok": False, "status": "credit", "message": "키는 맞지만 크레딧이 없어요. console.anthropic.com → Billing 에서 충전해 주세요."}
+        return {"ok": False, "status": "error", "message": "Anthropic 이 요청을 거절했어요. 모델 설정을 확인해 주세요."}
+    except anthropic.RateLimitError:
+        return {"ok": True, "status": "valid", "message": "키는 유효해요. (지금은 호출이 많아 잠시 대기 중)"}
+    except anthropic.APIConnectionError:
+        return {"ok": False, "status": "network", "message": "Anthropic 에 연결하지 못했어요. 인터넷 연결을 확인해 주세요."}
+    except anthropic.APIStatusError as error:
+        return {"ok": False, "status": "error", "message": f"Anthropic 서버 오류({error.status_code})예요. 잠시 뒤 다시 시도해 주세요."}
+    return {"ok": True, "status": "valid", "message": "키가 유효해요. 이 브라우저에만 저장됩니다."}

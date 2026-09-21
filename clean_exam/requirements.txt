@@ -10,3 +10,9 @@ PyYAML>=6.0            # config.yaml 읽기
 anthropic>=0.40        # 클로드 판정관 (키는 호출할 때 인자로 넘긴다)
 pytest>=8.0             # 테스트
 koreanize-matplotlib>=0.1  # 합성 시험지에 쓸 나눔고딕(OFL 라이선스) 번들
+
+# ── 2단계(웹사이트)부터 필요한 것 ──
+fastapi>=0.115           # 웹 서버
+uvicorn[standard]>=0.30  # FastAPI 를 실제로 띄우는 서버
+python-multipart>=0.0.9  # 사진 업로드(폼 데이터) 처리
+httpx>=0.27              # 테스트에서 서버를 실제로 호출할 때
