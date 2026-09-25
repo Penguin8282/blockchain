@@ -1,0 +1,18 @@
+# 깔끔 시험지 — 1단계(규칙 기반 엔진 + 클로드 판정관)에 필요한 것만.
+# 2단계(웹), 4단계(자체 모델), 5단계(변형 문제)에서 필요한 패키지는 그 단계에서 추가한다.
+
+numpy>=1.26            # 픽셀 배열 계산
+opencv-python-headless>=4.9   # 이미지 처리 본체 (headless: 서버에 GUI가 없으므로)
+Pillow>=10.0           # 파일 열기/저장, HEIC·WEBP 등 스마트폰 포맷, 합성 시험지 생성
+pillow-heif>=0.16      # 아이폰 HEIC 사진 읽기
+scikit-image>=0.22     # 세선화(skeletonize) 등 OpenCV에 없는 연산
+PyYAML>=6.0            # config.yaml 읽기
+anthropic>=0.40        # 클로드 판정관 (키는 호출할 때 인자로 넘긴다)
+pytest>=8.0             # 테스트
+koreanize-matplotlib>=0.1  # 합성 시험지에 쓸 나눔고딕(OFL 라이선스) 번들
+
+# ── 2단계(웹사이트)부터 필요한 것 ──
+fastapi>=0.115           # 웹 서버
+uvicorn[standard]>=0.30  # FastAPI 를 실제로 띄우는 서버
+python-multipart>=0.0.9  # 사진 업로드(폼 데이터) 처리
+httpx>=0.27              # 테스트에서 서버를 실제로 호출할 때
