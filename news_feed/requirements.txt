@@ -1,0 +1,6 @@
+# 뉴스 수집기(news_feed) 전용 패키지
+# 설치: pip install -r news_feed/requirements.txt
+feedparser>=6.0        # 매체마다 조금씩 다른 RSS/Atom 형식을 알아서 읽어주는 도구
+requests>=2.31         # RSS 내려받기, 텔레그램·디스코드 알림 보내기
+python-dotenv>=1.0     # .env 에서 텔레그램 토큰 등을 읽기 (없어도 동작)
+pytest>=8.0            # 테스트 실행

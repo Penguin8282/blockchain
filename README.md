@@ -1,5 +1,7 @@
 # 이더리움 지갑 주소 사기 여부 분류 모델
 
+> 📰 **블록체인 뉴스 수집·알림기**도 함께 들어 있습니다 → [`news_feed/README.md`](news_feed/README.md)
+
 Kaggle **Ethereum Fraud Detection Dataset** 을 이용해, 신용평가 모형을 만들듯이
 **해석 가능한(interpretable) 사기 주소 분류 모델**을 만드는 프로젝트입니다.
 

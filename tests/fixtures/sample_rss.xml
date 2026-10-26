@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Sample Crypto News</title>
+    <link>https://example.com</link>
+    <description>테스트용 가짜 RSS</description>
+    <item>
+      <title>BREAKING: Exchange hacked, $120M in ETH drained</title>
+      <link>https://example.com/news/exchange-hack/?utm_source=rss#top</link>
+      <description>&lt;p&gt;Attackers &lt;b&gt;exploited&lt;/b&gt; a hot wallet &amp;amp; moved funds.&lt;/p&gt;</description>
+      <pubDate>Mon, 26 Oct 2026 03:10:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>SEC approves new spot Bitcoin ETF applications</title>
+      <link>https://example.com/news/sec-etf</link>
+      <description>The regulator approved several filings.</description>
+      <pubDate>Mon, 26 Oct 2026 02:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>업비트, 솔라나 기반 신규 토큰 상장</title>
+      <link>https://example.com/news/upbit-listing</link>
+      <description>국내 거래소 업비트가 원화 마켓에 신규 토큰을 상장한다.</description>
+      <pubDate>Sun, 25 Oct 2026 14:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>A new method for teaching blockchain basics</title>
+      <link>https://example.com/news/teaching</link>
+      <description>An education column.</description>
+      <pubDate>Sun, 25 Oct 2026 10:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title></title>
+      <link>https://example.com/news/no-title</link>
+    </item>
+  </channel>
+</rss>

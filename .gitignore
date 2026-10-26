@@ -35,3 +35,7 @@ venv/
 .vscode/
 .idea/
 .DS_Store
+
+# ===== 뉴스 수집기 산출물 =====
+# 수집한 뉴스 DB 와 타임라인 HTML 은 실행할 때마다 새로 만들어지므로 올리지 않는다.
+news_feed/output/
