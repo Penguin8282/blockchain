@@ -58,6 +58,41 @@ NEWS_ALERT_MIN_LEVEL=2      # 1=전부, 2=주목 이상(기본), 3=중요만
 
 디스코드는 채널 설정 → 연동 → 웹후크 주소를 `DISCORD_WEBHOOK_URL` 에 넣으면 됩니다.
 
+## 서버 없이 자동 실행하기 (GitHub Actions)
+
+`.github/workflows/news-feed.yml` 이 **10분마다** GitHub 의 컴퓨터에서 수집기를 돌려 줍니다.
+내 컴퓨터를 꺼 둬도 텔레그램으로 알림이 옵니다. 공개(public) 저장소는 무료입니다.
+
+```
+[10분마다] news-data 브랜치에서 지난 DB 꺼내기 → 수집·알림 → DB·HTML 을 news-data 에 다시 저장
+```
+
+Actions 는 매번 '빈 컴퓨터'에서 시작해서 지난번 기억이 없습니다. 그래서 DB 를 `news-data`
+브랜치에 보관했다가 다음 실행 때 꺼내 씁니다(`.github/scripts/news_state.sh`).
+이 브랜치는 매번 커밋 하나로 덮어써서 용량이 불어나지 않습니다.
+
+**설정 순서**
+
+1. **기본 브랜치에 합치기** — 정해진 시간 실행(schedule)은 저장소의 *기본 브랜치*에 있는
+   워크플로만 동작합니다. 이 코드가 들어 있는 브랜치를 기본 브랜치에 머지해 주세요.
+2. **알림 비밀값 등록** — 저장소 `Settings → Secrets and variables → Actions`
+   - `Secrets` 탭: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (디스코드는 `DISCORD_WEBHOOK_URL`)
+   - `Variables` 탭(선택): `NEWS_ALERT_MIN_LEVEL` = `1`/`2`/`3` (기본 2)
+   - 비밀값은 로그에 `***` 로 가려지고, 저장소 파일에는 남지 않습니다.
+3. **첫 실행** — `Actions` 탭 → `news-feed` → `Run workflow`.
+   첫 회는 기존 기사를 저장만 하고, 그다음 회부터 새 뉴스가 알림으로 옵니다.
+4. **(선택) 타임라인을 웹 주소로 보기** — `Settings → Pages` 에서
+   Source 를 `Deploy from a branch`, 브랜치 `news-data` / `/(root)` 로 고르면
+   `https://<아이디>.github.io/blockchain/` 에서 휴대폰으로도 타임라인을 볼 수 있습니다.
+
+**알아둘 점**
+
+- GitHub 의 예약 실행은 바쁜 시간대에 **몇 분~수십 분 늦게** 돌거나 가끔 건너뛰기도 합니다.
+  초 단위 속보가 필요하면 상시 켜진 서버(또는 집 PC 에서 `watch`)가 필요합니다.
+- 공개 저장소는 **오랫동안(약 60일) 활동이 없으면 예약 실행이 자동으로 꺼질 수 있습니다.**
+  봇의 `news-data` 푸시가 '활동'으로 인정되는지는 확실하지 않으니, 꺼지면 Actions 탭에서 다시 켜 주세요.
+- 수집 간격은 워크플로의 `cron: "*/10 * * * *"` 를 고치면 됩니다 (`*/30` = 30분마다, 최소 5분).
+
 ## 중요도는 어떻게 매기나?
 
 ```
